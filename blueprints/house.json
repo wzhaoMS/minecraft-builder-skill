@@ -1,0 +1,5 @@
+{
+  "name": "Red House",
+  "generator": "house",
+  "params": { "width": 8, "depth": 8, "height": 5, "wall": "red_concrete", "roof": "dark_oak_planks", "floor": "stone_bricks" }
+}

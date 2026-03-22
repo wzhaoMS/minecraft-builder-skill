@@ -1,0 +1,5 @@
+{
+  "name": "Glass Sphere",
+  "generator": "sphere",
+  "params": { "radius": 6, "material": "glass" }
+}
