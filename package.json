@@ -10,8 +10,11 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "canvas": "^3.2.3",
     "mineflayer": "^4.35.0",
     "mineflayer-pathfinder": "^2.4.5",
-    "prismarine-schematic": "^1.2.3"
+    "prismarine-schematic": "^1.2.3",
+    "prismarine-viewer": "^1.33.0",
+    "puppeteer": "^24.43.1"
   }
 }
