@@ -130,8 +130,10 @@ blueprint ─► Structure (sparse 16³ sections + palette) ─► lint (validat
   `mcb` switches `send_command_feedback` off for the build and restores it (journaled, so even a
   crash is repaired on the next run).
 * **Version quirks.** 1.21.11 renamed gamerules (`sendCommandFeedback` → `send_command_feedback`…)
-  and `chain` became `iron_chain`; `mcb` validates against the server version and tries both
-  gamerule names. PaperMC's old download API now returns 410 — `mcb` uses the new Fill API.
+  and 1.21.9 renamed `chain` to `iron_chain`; `mcb` validates against the server version, translates
+  renamed blocks either way and tries both gamerule names. Paper keeps gamerules per world, so
+  `mcb` always names the world it changes. PaperMC's old download API now returns 410 — `mcb` uses
+  the new Fill API.
 
 ## Development
 

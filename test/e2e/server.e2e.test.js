@@ -30,6 +30,12 @@ const state = fs.mkdtempSync(path.join(os.tmpdir(), 'mcb-e2e-'));
 let bot = null;
 let rcon = null;
 
+/** The CLI test logs in as the same bot name, which kicks the shared session: notice that and rejoin. */
+async function ensureBot() {
+  await new Promise((r) => setTimeout(r, 1500));
+  if (bot.closed) await bot.reconnect();
+}
+
 const tower = () => fromJson({
   name: 'e2e-tower',
   palette: { S: 'stone_bricks', G: 'glass', D: 'oak_door[facing=south]', T: 'wall_torch[facing=south]', L: 'oak_leaves', _: 'air', W: 'oak_stairs[facing=north]' },
@@ -250,6 +256,7 @@ test('CLI: mcb build --json prints a machine-readable report', { skip: !enabled 
 });
 
 test('nether builds mute and restore command feedback in the nether itself, and undo there', { skip: !enabled || !cfg.rconPassword }, async () => {
+  await ensureBot();
   const feedback = async (dim) => /currently set to: (\w+)/.exec((await rcon.query(`execute in ${dim} run gamerule send_command_feedback`)).text)?.[1];
   const before = { nether: await feedback('minecraft:the_nether'), overworld: await feedback('minecraft:overworld') };
   const s = await tower();
