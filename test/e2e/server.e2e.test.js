@@ -34,6 +34,7 @@ let rcon = null;
 async function ensureBot() {
   await new Promise((r) => setTimeout(r, 1500));
   if (bot.closed) await bot.reconnect();
+  bot.setDimension('minecraft:overworld'); // the shared transport remembers the last build's dimension
 }
 
 const tower = () => fromJson({
@@ -307,7 +308,8 @@ test('an exported data pack builds the blueprint exactly when run on the server'
   await ensureBot();
   const world = resolvePlacement(s, { at: [1252, Y, 1002], anchor: 'corner' }).world;
   const v = await verifyAndRepair(bot, world, { repair: false });
-  assert.equal(v.mismatches, 0, JSON.stringify(v.examples));
+  const probe = (await rcon.query(`execute if block 1252 ${Y} 1002 stone_bricks`)).text;
+  assert.equal(v.mismatches, 0, `rcon says: ${probe}; bot in ${bot.currentDimension} (wants ${bot.dimension}); ${JSON.stringify(v.examples?.slice(0, 2))}`);
   assert.equal(v.unreadable, 0);
   fs.rmSync(path.join(packs, 'e2e_tower'), { recursive: true, force: true });
 });
