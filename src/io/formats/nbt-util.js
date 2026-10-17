@@ -284,16 +284,46 @@ function isEmptyTag(t) {
   return false;
 }
 
+const EMPTY_TEXT = new Set(['', '""', "''", '{"text":""}']);
+function isEmptyText(t) {
+  if (t.type === 'string') return EMPTY_TEXT.has(String(t.value).trim());
+  if (t.type === 'compound') {
+    const keys = Object.keys(t.value);
+    return !keys.length || (keys.length === 1 && t.value.text?.type === 'string' && t.value.text.value === '');
+  }
+  return false;
+}
+
+/** Leave out what a sign has by default (black, unlit, unwaxed, blank sides) — shorter restore commands. */
+function compactSign(kept) {
+  for (const side of ['front_text', 'back_text']) {
+    const s = kept[side];
+    if (!s || s.type !== 'compound') continue;
+    const v = { ...s.value };
+    if (v.color?.type === 'string' && v.color.value === 'black') delete v.color;
+    if (v.has_glowing_text && Number(v.has_glowing_text.value) === 0) delete v.has_glowing_text;
+    for (const key of ['messages', 'filtered_messages']) {
+      const m = v[key];
+      if (m?.type === 'list' && m.value.value.every((e) => isEmptyText({ type: m.value.type, value: e }))) delete v[key];
+    }
+    if (Object.keys(v).length) kept[side] = { type: 'compound', value: v };
+    else delete kept[side];
+  }
+  if (kept.is_waxed && Number(kept.is_waxed.value) === 0) delete kept.is_waxed;
+}
+
 /**
- * SNBT for a block entity's data (position / id fields and empty lists / compounds dropped).
+ * SNBT for a block entity's data (position / id fields and empty lists / compounds dropped;
+ * `compact` also drops sign defaults).
  * @returns {{ snbt: string|null, reason?: 'empty'|'too-long'|'unrepresentable' }}
  */
-export function blockEntitySnbt(compoundValue, { maxLength = MAX_IMPORTED_SNBT } = {}) {
+export function blockEntitySnbt(compoundValue, { maxLength = MAX_IMPORTED_SNBT, compact = false } = {}) {
   const kept = {};
   for (const [k, v] of Object.entries(compoundValue || {})) {
     if (BE_DROP.has(k) || !v || isEmptyTag(v)) continue;
     kept[k] = v;
   }
+  if (compact && (kept.front_text || kept.back_text)) compactSign(kept);
   if (!Object.keys(kept).length) return { snbt: null, reason: 'empty' };
   let s;
   try {

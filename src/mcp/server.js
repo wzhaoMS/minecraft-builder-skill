@@ -239,13 +239,20 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
       if (!keepAir) s.replace('air', null);
       s = s.translated(-box[0], -box[1], -box[2]);
       s.name = 'snapshot';
+      // the JSON blueprint is rebuilt with commands, which can't carry very long block data
+      const { dropUnbuildableData } = await import('../snapshot.js');
+      const dropped = dropUnbuildableData(s);
       const { structureToJson } = await import('../io/formats/index.js');
       const { renderPreview } = await import('../render/preview.js');
       const r = renderPreview(s, { view: 'sheet', title: `snapshot ${box.join(',')}` });
+      const notes = [];
+      if (dropped) notes.push(`${dropped} block(s) had block data (head skins, banner patterns, sign text) too long to rebuild with a command and were left without it`);
+      if (cap.lostData?.length) notes.push(`the block data of ${cap.lostData.length} block(s) could not be read`);
       return {
         content: [
           { type: 'image', data: r.png.toString('base64'), mimeType: 'image/png' },
           { type: 'text', text: JSON.stringify(structureToJson(s)) },
+          ...(notes.length ? [{ type: 'text', text: `warning: ${notes.join('; ')}` }] : []),
         ],
       };
     },

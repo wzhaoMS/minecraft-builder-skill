@@ -12,7 +12,7 @@ import { lintStructure } from '../core/lint.js';
 import { planBuild } from '../compile/plan.js';
 import { executeBuild, validateBuildOptions, dimensionLabel, normalizeDimension } from '../build.js';
 import { openTransport, onlinePlayers } from '../connect.js';
-import { listSnapshots, captureRegion } from '../snapshot.js';
+import { listSnapshots, captureRegion, dropUnbuildableData } from '../snapshot.js';
 import { DEFAULT_MC_VERSION } from '../core/blockinfo.js';
 
 const require = createRequire(import.meta.url);
@@ -487,7 +487,7 @@ function printReport(r, out) {
   for (const e of r.errors ?? []) out.print(`  ✗ ${e.count}× ${e.message}${e.hint ? ` — ${e.hint}` : ''}${e.examples?.length ? `\n      e.g. /${e.examples[0]}` : ''}`);
   if (r.verify) {
     const v = r.verify;
-    out.print(`  verify: ${v.checked} checked, ${v.matched} match, ${v.mismatches} mismatched → ${v.repaired} repaired, ${v.remaining} remaining${v.unreadable ? `, ${v.unreadable} unreadable` : ''}`);
+    out.print(`  verify: ${v.checked} checked, ${v.matched} match, ${v.mismatches} mismatched → ${v.repaired} repaired, ${v.remaining} remaining${v.dataMismatches ? `, ${v.dataMismatches} with other block data` : ''}${v.unreadable ? `, ${v.unreadable} unreadable` : ''}`);
     for (const m of v.examples ?? []) out.print(`    at ${m.pos.join(',')}: expected ${m.expected}, found ${m.actual}`);
   }
   if (r.impact?.replacedBlocks) out.print(`  replaced ${r.impact.replacedBlocks} existing blocks (${Object.entries(r.impact.replaced).slice(0, 4).map(([b, n]) => `${n} ${b}`).join(', ')})`);
@@ -651,6 +651,7 @@ async function cmdUndo(flags, out) {
     }
     if (r.unreadable) out.print(`  ⚠ ${r.unreadable} block(s) could not be read and were left alone — run the undo again (or --force)`);
     for (const e of r.build?.errors ?? []) out.print(`  ✗ ${e.count}× ${e.message}`);
+    if (r.failedAt && r.hint) out.print(`  ${r.hint}`);
     if (!r.ok) out.print(`  the snapshot was kept: re-run \`${selfCommand()} undo ${snap.id}${configFlag(flags)}\` to retry`);
     return r.ok ? 0 : 3;
   } finally {
@@ -698,6 +699,11 @@ async function cmdSnapshot(flags, out) {
     s = s.translated(-box[0], -box[1], -box[2]);
     s.name = flags.name ?? path.basename(String(flags.out ?? 'snapshot'), path.extname(String(flags.out ?? '')));
     const file = flags.out && flags.out !== true ? flags.out : `${s.name}.json`;
+    // .schem/.nbt/.litematic carry block data natively; a .json blueprint is built with commands,
+    // which can't carry very long data (decorated heads, many-pattern banners)
+    const dropped = /\.json$/i.test(file) ? dropUnbuildableData(s) : 0;
+    if (dropped) out.log(`warning: ${dropped} block(s) had block data (head skins, banner patterns, sign text) too long to rebuild with a command — saved without it (.schem keeps it)`);
+    if (cap.lostData?.length) out.log(`warning: the block data of ${cap.lostData.length} block(s) could not be read and was left out`);
     const { writeStructureFile } = await import('../io/formats/index.js');
     await writeStructureFile(s, file, {});
     let render = null;

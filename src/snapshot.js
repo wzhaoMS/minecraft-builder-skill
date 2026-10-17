@@ -7,14 +7,14 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { Structure } from './core/structure.js';
-import { splitBox } from './compile/plan.js';
-
-/** Blocks whose block-entity data the server shares with clients (text, patterns, profiles, sherds). */
-const CLIENT_BLOCK_ENTITY = /^[a-z0-9_:]*(_sign|_banner|_skull|_head|decorated_pot)(\[|$)/;
+import { splitBox, MAX_COMMAND_LENGTH } from './compile/plan.js';
+import { clientSeesData } from './core/blockdata.js';
 
 /**
- * Read every block in `box` ([x1,y1,z1,x2,y2,z2]) via a transport that can read (bot).
- * @returns {Promise<{ structure: Structure, unknown: number }>}
+ * Read every block in `box` ([x1,y1,z1,x2,y2,z2]) via a transport that can read (bot), with the
+ * block data clients see (sign text, banner patterns, heads).
+ * @returns {Promise<{ structure: Structure, unknown: number, lostData: number[][] }>} lostData:
+ *   positions whose block data exists but could not be captured
  */
 export async function captureRegion(transport, box, { tile = transport.readTileSize ?? 64, onProgress } = {}) {
   if (!transport.canRead) throw new Error(`The ${transport.kind} transport cannot read blocks (use the bot transport)`);
@@ -23,6 +23,10 @@ export async function captureRegion(transport, box, { tile = transport.readTileS
   const [x1, y1, z1, x2, y2, z2] = box;
   const s = new Structure({ name: 'snapshot' });
   let unknown = 0;
+  const lostData = [];
+  const readData = transport.readBlockData
+    ? (x, y, z) => transport.readBlockData(x, y, z)
+    : transport.readBlockEntitySnbt ? (x, y, z) => ({ snbt: transport.readBlockEntitySnbt(x, y, z) }) : null;
   const tiles = splitBox({ x1, y1, z1, x2, y2, z2 }, Number.MAX_SAFE_INTEGER, tile);
   let done = 0;
   for (const t of tiles) {
@@ -41,10 +45,10 @@ export async function captureRegion(transport, box, { tile = transport.readTileS
           }
           if (b === undefined) { unknown++; continue; }
           if (b === 'cave_air' || b === 'void_air') b = 'air';
-          // keep what the client knows of block entities (sign text, banners, heads) with the block
-          else if (transport.readBlockEntitySnbt && CLIENT_BLOCK_ENTITY.test(b) && !b.startsWith('piston_head')) {
-            const nbt = transport.readBlockEntitySnbt(x, y, z);
-            if (nbt) b += nbt;
+          else if (readData && clientSeesData(b)) {
+            const d = readData(x, y, z);
+            if (d.snbt) b += d.snbt;
+            else if (d.reason) lostData.push([x, y, z]);
           }
           s.set(x, y, z, b);
         }
@@ -53,7 +57,24 @@ export async function captureRegion(transport, box, { tile = transport.readTileS
     done++;
     onProgress?.(done, tiles.length);
   }
-  return { structure: s, unknown };
+  return { structure: s, unknown, lostData };
+}
+
+/**
+ * Remove block data a /setblock could not carry anywhere in the world (the command would be longer
+ * than chat allows even at the most negative coordinates). Returns how many blocks lost data.
+ */
+export function dropUnbuildableData(structure) {
+  if (!structure.palette.some((b) => b?.includes('{'))) return 0;
+  let n = 0;
+  structure.forEach((x, y, z, b) => {
+    if (!b.includes('{')) return;
+    if (`/setblock -30000000 -64 -30000000 ${b} strict`.length > MAX_COMMAND_LENGTH) {
+      structure.set(x, y, z, b.slice(0, b.indexOf('{')));
+      n++;
+    }
+  });
+  return n;
 }
 
 function rleEncode(structure, box, palette, pidx) {

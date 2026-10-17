@@ -50,17 +50,22 @@ RCON, the bot's connection and its operator status, and prints a fix for each pr
   actually changed.
 * Undo needs the **bot** transport (RCON can't read blocks); RCON builds report
   `undo.available: false`. With RCON, `mcb undo --force` restores without checking for later edits.
-* Snapshots store block states only — entities, dropped items and container contents are not
-  saved. That's why builds refuse to overwrite chests, barrels, lecterns, shulker boxes… (sign text, banner patterns and heads are saved, so signs can be built over and undone)
-  (`CONTAINERS_AT_RISK`) unless you pass `--force` — including identical ones a `/fill` would
-  rewrite, and with `--no-undo`.
+* Snapshots store block states plus the block data clients can see (sign text, banner patterns,
+  heads) — entities, dropped items and container contents are not saved. That's why builds refuse
+  to overwrite chests, barrels, lecterns, shulker boxes… (`CONTAINERS_AT_RISK`) unless you pass
+  `--force` — including identical ones a `/fill` would rewrite, and with `--no-undo`. Signs,
+  banners and heads can be built over and undone; the exceptions are refused the same way: data
+  too long for one restoring command (decorated player heads, many-pattern banners), and any of it
+  with `--no-undo`.
 * Nothing is changed when the snapshot can't be taken completely (`SNAPSHOT_TOO_LARGE`,
   `SNAPSHOT_INCOMPLETE`); split the build or use `--no-undo` deliberately.
 * `--verify` compares every block (ignoring properties the game recomputes, like fence connections
   or leaf distance, and natural decay like grass → dirt) and repairs mismatches with one
   `/setblock` pass. The report separates `matched`, `mismatches`, `remaining` and `unreadable`
   (chunk not available — never counted as OK). It checks against your blueprint; to see what is
-  really there, `mcb snapshot --from … --to … --render live.png`.
+  really there, `mcb snapshot --from … --to … --render live.png`. Block data the blueprint asks
+  for (sign text, banner patterns, heads) is checked and repaired too; if the server keeps it
+  spelled differently even after the repair, it is counted in `dataMismatches` with a warning.
 * `mcb plan` shows the impact (blocks replaced by type, containers at risk) without changing anything.
 * If a build is killed, `send_command_feedback` may stay off until the next `mcb` build or
   `mcb doctor` restores it (both do it automatically from the journal in `.mcb/`).

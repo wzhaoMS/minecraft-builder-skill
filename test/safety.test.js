@@ -346,8 +346,121 @@ test('block data in blueprints: a sign with different text is not "already built
   const world = 'oak_sign[rotation=0,waterlogged=false]{front_text:{has_glowing_text:0b,color:"black",messages:["Hello","","",""]},is_waxed:0b}';
   assert.equal(nbtSatisfied('oak_sign[rotation=0]{front_text:{messages:["Hello","","",""]}}', world), true, 'subset of what the server reports');
   assert.equal(nbtSatisfied('oak_sign[rotation=0]{front_text:{messages:["Bye","","",""]}}', world), false);
-  assert.equal(nbtSatisfied('oak_sign[rotation=0]{front_text:{messages:["Hello","","",""]}}', 'oak_sign[rotation=0]'), false, 'unknown → send again');
+  assert.equal(nbtSatisfied('oak_sign[rotation=0]{front_text:{messages:["Hello","","",""]}}', 'oak_sign[rotation=0]'), false, 'a bare sign is blank');
   assert.equal(nbtSatisfied('oak_sign[rotation=0]', world), true, 'no data asked for');
+  assert.equal(nbtSatisfied('chest{Items:[]}', 'chest[facing=north]'), false, 'data clients never see is unknown: send again');
+});
+
+test('block data comparison: spellings of the same text, ids and defaults are equal; edits are not', async () => {
+  const { dataSatisfied, dataEquivalent } = await import('../src/core/blockdata.js');
+  const json = 'oak_sign{front_text:{messages:[\'"Hi"\',\'{"text":""}\',\'""\',\'""\']}}';
+  const plain = 'oak_sign[rotation=0]{front_text:{color:"black",has_glowing_text:0b,messages:["Hi","","",""]},back_text:{messages:["","","",""]},is_waxed:0b}';
+  const comp = 'oak_sign{front_text:{messages:[{text:"Hi"},{text:""},{text:""},{text:""}]}}';
+  assert.equal(dataEquivalent(json, plain), true);
+  assert.equal(dataEquivalent(comp, plain), true);
+  assert.equal(dataSatisfied(json, plain), true);
+  assert.equal(dataEquivalent('oak_sign', 'oak_sign{front_text:{messages:["","","",""]},is_waxed:0b}'), true, 'bare = blank sign');
+  const backEdited = 'oak_sign{front_text:{messages:["Hi","","",""]},back_text:{messages:["edit","","",""]}}';
+  assert.equal(dataSatisfied(json, backEdited), true, 'the blueprint only asks for the front');
+  assert.equal(dataEquivalent(json, backEdited), false, 'but it is not what the build left');
+  assert.equal(dataEquivalent('oak_sign{front_text:{color:"red"}}', 'oak_sign'), false);
+  assert.equal(dataEquivalent('white_banner{patterns:[{color:"red",pattern:"minecraft:stripe_top"}]}', 'white_banner{patterns:[{color:"red",pattern:"stripe_top"}]}'), true);
+  assert.equal(dataEquivalent('chest{Items:[]}', 'chest'), false, 'unseen data: only identical spellings are equal');
+  assert.equal(dataEquivalent('chest', 'chest'), true);
+});
+
+test('undo: a sign side a player wrote on after the build is a conflict, even if the blueprint never set it', async () => {
+  const dir = tmp();
+  const sim = new SimTransport();
+  const s = new Structure({ name: 'board' }).set(0, 0, 0, 'oak_sign[rotation=0]{front_text:{messages:["Shop","","",""]}}');
+  const r = await executeBuild({ structure: s, transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet });
+  assert.equal(r.ok, true);
+  sim.data.set('0,0,0', '{front_text:{messages:["Shop","","",""]},back_text:{messages:["Steve was here","","",""]}}');
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.conflicts, 1, JSON.stringify(u));
+  assert.match(sim.data.get('0,0,0'), /Steve was here/, 'the edit survives');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('block data undo cannot restore: refused without --force; forced builds warn and undo restores the block without it', async () => {
+  const dir = tmp();
+  const long = `oak_sign[rotation=0]{front_text:{messages:[${Array.from({ length: 4 }, (_, i) => `"${'line '.repeat(8)}${i}"`).join(',')}]},back_text:{messages:[${Array.from({ length: 4 }, () => `"${'back text '.repeat(4)}"`).join(',')}]}}`;
+  const sim = new SimTransport({ blocks: { '1,0,1': long } });
+  sim.data.set('1,0,1', long.slice(long.indexOf('{')));
+  await assert.rejects(() => executeBuild({ structure: hut(), transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet }), (e) => e.code === 'CONTAINERS_AT_RISK' && /oak_sign at 1,0,1/.test(e.message));
+  assert.equal(sim.worldEdits.length, 0, 'nothing changed');
+  const r = await executeBuild({ structure: hut(), transport: sim, at: [0, 0, 0], stateDir: dir, force: true, ...quiet });
+  assert.ok(r.warnings.some((w) => /without their text or data/.test(w)), r.warnings.join('\n'));
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.ok, true, JSON.stringify(u));
+  assert.match(sim.get(1, 0, 1), /^oak_sign/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('signs with text: undo restores the text; without undo they are protected like chests', async () => {
+  const dir = tmp();
+  const sign = 'oak_sign[rotation=4]{front_text:{messages:["Welcome","","",""]}}';
+  const sim = new SimTransport({ blocks: { '0,1,2': sign } });
+  assert.match(sim.data.get('0,1,2'), /Welcome/);
+  await assert.rejects(() => executeBuild({ structure: hut(), transport: sim, at: [0, 0, 0], undo: false, stateDir: dir, ...quiet }), (e) => e.code === 'CONTAINERS_AT_RISK' && /oak_sign at 0,1,2/.test(e.message));
+  const r = await executeBuild({ structure: hut(), transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet });
+  assert.match(sim.get(0, 1, 2), /^oak_planks/);
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.ok, true);
+  assert.match(sim.get(0, 1, 2), /^oak_sign\[rotation=4/);
+  assert.match(sim.data.get('0,1,2'), /Welcome/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('undo drains water placed where grass was before restoring anything else', async () => {
+  const dir = tmp();
+  const sim = new SimTransport({ blocks: { '1,-1,1': 'grass_block', '1,-2,1': 'dirt' } });
+  const pond = new Structure({ name: 'pond' }).fill(0, -1, 0, 2, 0, 2, 'stone_bricks', { mode: 'walls' }).set(1, -1, 1, 'water').set(1, 0, 1, 'water');
+  const r = await executeBuild({ structure: pond, transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet });
+  const mark = sim.commands.length;
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.ok, true, JSON.stringify(u));
+  const edits = sim.commands.slice(mark).filter((c) => /^(fill|setblock) /.test(c));
+  const firstTwo = edits.slice(0, 2).join(' | ');
+  assert.match(firstTwo, /setblock 1 -1 1 grass_block(?! strict)/, `the water over grass goes first, with updates: ${edits.join(' | ')}`);
+  assert.doesNotMatch(edits[0], / strict$/);
+  assert.match(sim.get(1, -1, 1), /^grass_block/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('undo stops before taking a basin down when removing its water failed', async () => {
+  const dir = tmp();
+  const sim = new SimTransport();
+  const pool = new Structure({ name: 'pool' }).fill(0, 0, 0, 2, 1, 2, 'stone_bricks', { mode: 'walls' }).set(1, 1, 1, 'water');
+  const r = await executeBuild({ structure: pool, transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet });
+  sim.failCommand = (c) => /^setblock 1 1 1 air$/.test(c); // the non-strict liquid removal fails
+  const mark = sim.commands.length;
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.ok, false);
+  assert.equal(u.failedAt, 'liquids');
+  assert.match(u.hint, /water\/lava/);
+  const edits = sim.commands.slice(mark).filter((c) => /^(fill|setblock) /.test(c));
+  assert.ok(edits.every((c) => /^setblock 1 1 1 /.test(c)), `walls left standing: ${edits.join(' | ')}`);
+  assert.match(sim.get(0, 1, 0), /^stone_bricks/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('verify checks sign text too: a wrong text is repaired; a persistent other spelling is reported, not failed', async () => {
+  const sim = new SimTransport();
+  const s = new Structure({ name: 'sign' }).set(0, 0, 0, 'oak_sign[rotation=0]{front_text:{messages:["B","","",""]}}');
+  let first = true;
+  sim.storeData = (key, nbt) => (first ? ((first = false), '{front_text:{messages:["A","","",""]}}') : nbt);
+  const r = await executeBuild({ structure: s, transport: sim, at: [0, 0, 0], undo: false, verify: true, ...quiet });
+  assert.equal(r.verify.repaired, 1, JSON.stringify(r.verify));
+  assert.equal(r.verify.dataMismatches, 0);
+  assert.match(sim.data.get('0,0,0'), /"B"/);
+  const sim2 = new SimTransport();
+  sim2.storeData = () => '{front_text:{messages:["something else","","",""]}}';
+  const r2 = await executeBuild({ structure: s, transport: sim2, at: [0, 0, 0], undo: false, verify: true, ...quiet });
+  assert.equal(r2.verify.dataMismatches, 1);
+  assert.equal(r2.verify.remaining, 0);
+  assert.equal(r2.ok, true);
+  assert.ok(r2.warnings.some((w) => /other block data/.test(w)), r2.warnings.join('\n'));
 });
 
 test('snapshot ids are unique and never overwrite each other', () => {

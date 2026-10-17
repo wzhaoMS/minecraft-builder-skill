@@ -14,12 +14,12 @@
 import { Structure } from './core/structure.js';
 import { lintStructure } from './core/lint.js';
 import { parseBlock, blockName, isAir } from './core/blockstate.js';
-import { planBuild, placementState, tileBounds } from './compile/plan.js';
+import { planBuild, placementState, tileBounds, MAX_COMMAND_LENGTH } from './compile/plan.js';
 import { resolvePlacement, checkPlacementOptions } from './placement.js';
 import { captureRegion, saveSnapshot, newSnapshotId } from './snapshot.js';
 import { withGamerules, recoverGamerules, getGamerule } from './gamerules.js';
 import { defaultProps } from './core/blockinfo.js';
-import { parseSnbt } from './io/formats/nbt-util.js';
+import { dataSatisfied, clientSeesData, nbtPart } from './core/blockdata.js';
 
 export const REPORT_SCHEMA = 'mcb.build-report/1';
 
@@ -155,37 +155,11 @@ function alreadyThere(want, cur, x, y, z, target, world) {
   return above != null && !isAir(above);
 }
 
-/** Does the world block carry (at least) the NBT the wanted block specifies? */
-export function nbtSatisfied(want, cur) {
-  const w = nbtPart(want);
-  if (!w) return true;
-  const c = nbtPart(cur);
-  if (!c) return false; // unknown (not readable): send it again rather than assume
-  if (w === c) return true;
-  try {
-    return tagSubset(parseSnbt(w), parseSnbt(c));
-  } catch {
-    return false;
-  }
-}
+/** Does the world block carry (at least) the block data the wanted block specifies? */
+export const nbtSatisfied = dataSatisfied;
 
-const nbtPart = (block) => {
-  const i = String(block).indexOf('{');
-  return i < 0 ? null : String(block).slice(i);
-};
-
-function tagSubset(a, b) {
-  if (!a || !b) return false;
-  if (a.type === 'compound') {
-    if (b.type !== 'compound') return false;
-    return Object.entries(a.value).every(([k, v]) => tagSubset(v, b.value[k]));
-  }
-  if (a.type === 'list') {
-    if (b.type !== 'list' || a.value.value.length !== b.value.value.length) return false;
-    return a.value.value.every((v, i) => tagSubset({ type: a.value.type, value: v }, { type: b.value.type, value: b.value.value[i] }));
-  }
-  return JSON.stringify(a.value) === JSON.stringify(b.value);
-}
+/** Is there block data (sign text…) that a /setblock in the restore could not carry back? */
+const restoreTooLong = (block, x, y, z) => block.includes('{') && `setblock ${x} ${y} ${z} ${block} strict`.length + 1 > MAX_COMMAND_LENGTH;
 
 /**
  * @param {object} o
@@ -326,6 +300,7 @@ export async function executeBuild(o) {
   await withGamerules(transport, o.quiet === false ? {} : { sendCommandFeedback: false }, async () => {
     // 4. read-only phase: snapshot (undo), impact, container guard — nothing has been changed yet
     let snapshot = null;
+    const dataAtRisk = new Set(); // "x,y,z" of block data an undo could not restore
     const wantUndo = o.undo !== false && !o.planOnly;
     // the snapshot also keeps the ground layer under the build: grass there turns to dirt while
     // covered, and undo puts it back
@@ -356,6 +331,12 @@ export async function executeBuild(o) {
           });
         }
         snapshot = cap.structure;
+        // Block data (sign text, banner patterns…) undo could not put back: too long for the one
+        // /setblock that restores it, or not capturable at all. Overwriting it needs --force, like a chest.
+        for (const p of cap.lostData ?? []) dataAtRisk.add(p.join(','));
+        if (snapshot.palette.some((b) => b?.includes('{'))) {
+          snapshot.forEach((x, y, z, b) => { if (restoreTooLong(b, x, y, z)) dataAtRisk.add(`${x},${y},${z}`); });
+        }
         Object.defineProperty(report, 'snapshot', { value: snapshot, enumerable: false });
         Object.defineProperty(report, 'snapshotBox', { value: snapBox, enumerable: false });
       }
@@ -377,10 +358,12 @@ export async function executeBuild(o) {
       const replaced = {};
       const candidates = [];
       const changed = new Structure({ name: `${structure.name}-changes` });
+      // without an undo snapshot, nothing brings sign text or banner patterns back either
+      const undoPlanned = o.undo !== false;
       target.forEach((x, y, z, want) => {
         const cur = snapshot.get(x, y, z);
         if (cur == null) return;
-        if (holdsContents(cur)) candidates.push([x, y, z, cur]);
+        if (holdsContents(cur) || dataAtRisk.has(`${x},${y},${z}`) || (!undoPlanned && nbtPart(cur) && clientSeesData(cur))) candidates.push([x, y, z, cur]);
         const cleared = inBox(clearBox, x, y, z) && !isAir(cur);
         if (!cleared && alreadyThere(want, cur, x, y, z, target, snapshot)) return;
         changed.set(x, y, z, want);
@@ -418,6 +401,17 @@ export async function executeBuild(o) {
         throw new BuildError(`The build would destroy ${containers.length} block(s) holding items/text that undo cannot restore (e.g. ${containers.slice(0, 3).map((c) => `${c.block} at ${c.pos.join(',')}`).join('; ')}) — nothing was changed`, {
           code: 'CONTAINERS_AT_RISK', hint: 'Move the build (--at/--facing), empty those blocks first, or pass --force if they can be destroyed.', details: containers,
         });
+      }
+      if (dataAtRisk.size) {
+        // keep undo working: those blocks go back without their data (one /setblock could not carry it)
+        let lost = 0;
+        for (const k of dataAtRisk) {
+          const [x, y, z] = k.split(',').map(Number);
+          const b = snapshot.get(x, y, z);
+          if (b?.includes('{')) snapshot.set(x, y, z, b.slice(0, b.indexOf('{')));
+          if (changed.has(x, y, z)) lost++;
+        }
+        if (lost && !o.planOnly) report.warnings.push(`Undo will put back ${lost} sign/banner/head block(s) without their text or data (too long for a command, or unreadable)`);
       }
       if (o.stateDir && wantUndo && o.saveUndo !== false) {
         if (!changed.count) {
@@ -525,6 +519,10 @@ export async function executeBuild(o) {
     // 6. verify + repair
     if (o.verify && transport.canRead) {
       report.verify = await verifyAndRepair(transport, world, { repair: o.repair !== false, strict: !!o.strict, progress, log });
+      if (report.verify.dataMismatches) {
+        const ex = report.verify.examples.find((m) => m.data);
+        report.warnings.push(`${report.verify.dataMismatches} block(s) have other block data (sign text, banner patterns…) than the blueprint asks for${ex ? `, e.g. at ${ex.pos.join(',')}: ${ex.actual}` : ''} — check the NBT spelling for this Minecraft version`);
+      }
     } else if (o.verify) {
       report.warnings.push(`Verification needs a bot connection (the ${transport.kind} transport cannot read blocks)`);
     }
@@ -594,6 +592,9 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
     }
     return byTile;
   };
+  const readData = transport.readBlockData
+    ? (x, y, z) => transport.readBlockData(x, y, z)
+    : transport.readBlockEntitySnbt ? (x, y, z) => ({ snbt: transport.readBlockEntitySnbt(x, y, z) }) : null;
   const check = async (positions, stage = 'verify') => {
     const mismatches = [];
     const unreadable = [];
@@ -611,6 +612,12 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
         }
         if (actual === undefined) unreadable.push({ pos: [x, y, z], expected });
         else if (!blockMatches(expected, actual, { strict })) mismatches.push({ pos: [x, y, z], expected, actual });
+        else if (readData && nbtPart(expected) && clientSeesData(expected)) {
+          // the block data the blueprint asks for (sign text, banner patterns…) as far as clients see it
+          const d = readData(x, y, z);
+          const got = d.snbt ? actual + d.snbt : actual;
+          if (!dataSatisfied(expected, got)) mismatches.push({ pos: [x, y, z], expected, actual: got, data: true });
+        }
       }
       progress({ stage, done: ++i, total: byTile.size });
     }
@@ -626,9 +633,13 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
     mismatches = re.mismatches;
     unreadable = unreadable.concat(re.unreadable);
   }
+  // block states decide `remaining`; block data that still differs after the repair is reported
+  // apart (dataMismatches) — the server may store the same text in another spelling
+  const states = (list) => list.filter((m) => !m.data);
   const result = {
     checked: all.length - unreadable.length, matched: all.length - unreadable.length - mismatches.length,
-    mismatches: mismatches.length, unreadable: unreadable.length, repaired: 0, remaining: mismatches.length,
+    mismatches: mismatches.length, unreadable: unreadable.length, repaired: 0, remaining: states(mismatches).length,
+    dataMismatches: mismatches.length - states(mismatches).length,
     examples: mismatches.slice(0, 10),
   };
   if (repair && mismatches.length) {
@@ -648,7 +659,8 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
     await settle(transport, 600);
     const again = await check(mismatches.map((m) => [...m.pos, m.expected]), 'recheck');
     result.repaired = mismatches.length - again.mismatches.length - again.unreadable.length;
-    result.remaining = again.mismatches.length;
+    result.remaining = states(again.mismatches).length;
+    result.dataMismatches = again.mismatches.length - result.remaining;
     result.unreadable += again.unreadable.length;
     result.matched += result.repaired;
     result.examples = again.mismatches.slice(0, 10);

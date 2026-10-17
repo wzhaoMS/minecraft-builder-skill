@@ -328,3 +328,26 @@ test('auto transport: a bot that is not an operator falls back to RCON and says 
     await t.close();
   }
 });
+
+test('sign text: undo of a build over a sign restores its text; a side written on after a build is left alone', { skip: !enabled || !cfg.rconPassword }, async () => {
+  await ensureBot();
+  const { Structure } = await import('../../src/core/structure.js');
+  const X = 1400, Z = 1100;
+  await rcon.loadArea({ x1: X - 2, z1: Z - 2, x2: X + 12, z2: Z + 2 });
+  await rcon.command(`fill ${X - 2} ${Y} ${Z - 2} ${X + 12} ${Y + 3} ${Z + 2} air`);
+  await rcon.command(`setblock ${X} ${Y} ${Z} oak_sign[rotation=8]{front_text:{messages:["Hello","World","",""]}}`);
+  const cover = new Structure({ name: 'cover' }).fill(0, 0, 0, 2, 1, 2, 'stone');
+  const r = await executeBuild({ structure: cover, transport: bot, at: [X - 1, Y, Z - 1], stateDir: state });
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  const u = await undoBuild(bot, r.undo.file, { stateDir: state });
+  assert.equal(u.ok, true, JSON.stringify(u));
+  assert.match((await rcon.query(`data get block ${X} ${Y} ${Z} front_text.messages`)).text, /Hello.*World/);
+  const sign = new Structure({ name: 'shop' }).set(0, 0, 0, 'oak_sign[rotation=8]{front_text:{messages:["Shop","open","",""]}}');
+  const b = await executeBuild({ structure: sign, transport: bot, at: [X + 8, Y, Z], stateDir: state, verify: true });
+  assert.equal(b.verify.dataMismatches, 0, JSON.stringify(b.verify.examples));
+  await rcon.command(`data modify block ${X + 8} ${Y} ${Z} back_text.messages[0] set value "Steve"`);
+  await new Promise((res) => setTimeout(res, 500));
+  const u2 = await undoBuild(bot, b.undo.file, { stateDir: state });
+  assert.equal(u2.conflicts, 1, JSON.stringify(u2));
+  assert.match((await rcon.query(`data get block ${X + 8} ${Y} ${Z} back_text.messages`)).text, /Steve/);
+});

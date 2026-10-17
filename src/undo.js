@@ -9,7 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Structure } from './core/structure.js';
 import { decodeSnapshot, captureRegion, listSnapshots } from './snapshot.js';
-import { executeBuild, blockMatches, nbtSatisfied, BuildError, normalizeDimension, DIMENSIONS, DECAYS_UNDER_COVER } from './build.js';
+import { executeBuild, blockMatches, BuildError, normalizeDimension, DIMENSIONS, DECAYS_UNDER_COVER } from './build.js';
+import { dataEquivalent } from './core/blockdata.js';
 import { blockName, isAir } from './core/blockstate.js';
 import { withGamerules } from './gamerules.js';
 import { normalizeServerKey } from './connect.js';
@@ -76,7 +77,9 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
           return;
         }
         if (sameBlock(before, now)) return; // already as it was
-        if (!owned.some((b) => blockMatches(b, now) && nbtSatisfied(b, now))) {
+        // still exactly what the build left (block data included: a sign side a player wrote on
+        // since is an edit, even if the blueprint never mentioned that side)
+        if (!owned.some((b) => blockMatches(b, now) && dataEquivalent(b, now))) {
           conflicts.push({ pos: [x, y, z], expected: after, found: now });
           return;
         }
@@ -113,27 +116,38 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
     fixMultiblocks: false, dimension, log, onProgress, stateDir,
   });
   // Liquids go first: removing a basin's walls before its water would let the water run out into
-  // the surroundings (where it is not the build's to clean up).
+  // the surroundings (where it is not the build's to clean up). Ground cells count too (a pond dug
+  // into grass): their original block goes back now, with updates, so the water drains.
   const liquid = new Structure({ name: `${restore.name} (liquids)` });
-  restore.forEach((x, y, z, b) => {
-    const placed = [data.after?.get(x, y, z), ...(data.afterAlt ?? []).map((s) => s.get(x, y, z))];
-    if (placed.some((p) => p != null && isLiquidLike(p))) liquid.set(x, y, z, b);
-  });
-  let build = null, groundBuild = null;
+  const placedLiquid = (x, y, z) => [data.after?.get(x, y, z), ...(data.afterAlt ?? []).map((s) => s.get(x, y, z))]
+    .some((p) => p != null && isLiquidLike(p));
+  for (const part of [restore, ground]) part.forEach((x, y, z, b) => { if (placedLiquid(x, y, z)) liquid.set(x, y, z, b); });
+  let liquidBuild = null, build = null, groundBuild = null;
+  const hints = [];
   if (liquid.count) {
     // with block updates (not strict): removing a source must tell the water it fed to drain away,
     // otherwise orphaned falling/flowing water stays forever
-    await run(liquid, { strict: false });
+    liquidBuild = await run(liquid, { strict: false });
+    delete liquidBuild.undo;
+    if (!liquidBuild.ok) {
+      // the water/lava may still be there: taking its basin down now would let it run out
+      return {
+        ok: false, id, restored: 0, conflicts: conflicts.length, unreadable, conflictExamples: conflicts.slice(0, 10), failedAt: 'liquids',
+        hint: 'Removing the build\'s water/lava failed, so nothing else was restored (the walls holding it stay up). Fix the cause and run the undo again.',
+        build: liquidBuild,
+      };
+    }
     // let the flowing water/lava the sources fed drain away before their basin is taken down
     let lava = false;
-    liquid.forEach((x, y, z) => { if (blockName(data.after?.get(x, y, z) ?? '') === 'lava') lava = true; });
+    liquid.forEach((x, y, z) => {
+      if ([data.after?.get(x, y, z), ...(data.afterAlt ?? []).map((s) => s.get(x, y, z))].some((p) => p != null && blockName(p) === 'lava')) lava = true;
+    });
     await new Promise((r) => setTimeout(r, lava ? 6000 : 2500));
   }
   if (restore.count) build = await run(restore);
   if (ground.count) groundBuild = await run(ground);
   // the restore runs are not undoable builds of their own; don't confuse readers with their undo status
   if (build) delete build.undo;
-  const hints = [];
   if (conflicts.length) hints.push('Some blocks were changed after the build and were left as they are; re-run with --force to restore them too.');
   if (unreadable) hints.push('Some blocks could not be read (chunks not loaded) and were left as they are; re-run, or pass --force to restore them without checking.');
   return {
@@ -144,14 +158,14 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
     unreadable,
     conflictExamples: conflicts.slice(0, 10),
     hint: hints.length ? hints.join(' ') : undefined,
-    build,
+    build: build ?? liquidBuild,
     ...(groundBuild ? { ground: { restored: ground.count, ok: groundBuild.ok } } : {}),
   };
 }
 
-/** Same block state and the same block data (sign text…) as far as both sides know it. */
+/** Same block state and the same block data (sign text…). */
 function sameBlock(a, b) {
-  return blockMatches(a, b, { strict: true }) && nbtSatisfied(a, b) && nbtSatisfied(b, a);
+  return blockMatches(a, b, { strict: true }) && dataEquivalent(a, b);
 }
 
 /** Water/lava (incl. bubble columns and waterlogged blocks): states that can run out when their container goes. */

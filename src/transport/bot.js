@@ -529,12 +529,21 @@ export class BotTransport {
    * as SNBT, or null. Container contents are never sent to clients, so they can't be read.
    */
   readBlockEntitySnbt(x, y, z) {
-    if (!this.hasChunk(x, z)) return null;
+    return this.readBlockData(x, y, z).snbt ?? null;
+  }
+
+  /**
+   * Block-entity data at a position as compact SNBT: { snbt } (null when there is none or only
+   * defaults, e.g. a blank sign), or { snbt: null, reason } when it can't be written as SNBT.
+   */
+  readBlockData(x, y, z) {
+    if (!this.hasChunk(x, z)) return { snbt: null, reason: 'unloaded' };
     const col = this.bot.world.getColumn(x >> 4, z >> 4);
     let be;
-    try { be = col?.getBlockEntity({ x: x & 15, y, z: z & 15 }); } catch { return null; }
-    if (!be) return null;
-    return blockEntitySnbt(be.value ?? be).snbt ?? null;
+    try { be = col?.getBlockEntity({ x: x & 15, y, z: z & 15 }); } catch { return { snbt: null, reason: 'unreadable' }; }
+    if (!be) return { snbt: null };
+    const r = blockEntitySnbt(be.value ?? be, { maxLength: Infinity, compact: true });
+    return r.reason === 'empty' ? { snbt: null } : r;
   }
 
   /**

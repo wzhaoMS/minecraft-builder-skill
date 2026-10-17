@@ -50,6 +50,10 @@ build → verify → undo loop. Tested end-to-end against Paper 1.21.11 (locally
   `send_command_feedback=false` work.
 - Snapshots and undo keep sign text, banner patterns and player heads (what the server shares with
   clients), so signs can be built over and restored; a rebuild with new sign text updates it.
+  Block data an undo could not put back (too long for one command, or unreadable) is protected
+  like a chest — and so is all of it with `--no-undo`. Undo treats a sign side written on after
+  the build as an edit (left alone), and `--verify` checks sign text, banner patterns and heads too
+  (repairing them; other spellings the server keeps are reported as `dataMismatches`).
 - Unit tests (274, incl. an in-memory server for safety regressions), end-to-end tests against a
   real server (14, incl. a Nether build/undo and a bot that logs in inside another world), GitHub
   Actions CI on Windows/macOS/Linux × Node 22/24 plus an e2e job.
