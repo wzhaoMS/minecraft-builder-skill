@@ -85,7 +85,8 @@ export function resolveParams(gen, params = {}) {
     }
   }
   for (const [k, spec] of Object.entries(specs)) out[k] = coerce(k, spec, params[k]);
-  out.seed = params.seed ?? 1;
+  // a generator may declare its own default seed (as a 'seed' param); otherwise 1
+  if (!('seed' in specs)) out.seed = params.seed ?? gen.defaultSeed ?? 1;
   return out;
 }
 
