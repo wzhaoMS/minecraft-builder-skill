@@ -109,6 +109,14 @@ function shapeBoxes(info) {
     case 'slab-top-thin': return [[0, 0.8125, 0, 1, 1, 1]];
     case 'cube-thin': return [[0, 0, 0, 1, 1, 0.1875]];
     case 'post': return [[0.3125, 0, 0.3125, 0.6875, 1, 0.6875]];
+    case 'small': {
+      // a 4/16-wide, 10/16-tall stub; wall-mounted ones hug their wall (opposite `facing`), hanging ones the ceiling
+      const p = info.props;
+      const onWall = /wall_/.test(info.name) || p.face === 'wall';
+      const [dx, dz] = (onWall && { north: [0, 0.3], south: [0, -0.3], east: [-0.3, 0], west: [0.3, 0] }[p.facing]) || [0, 0];
+      const y0 = p.hanging === 'true' || p.face === 'ceiling' ? 0.375 : onWall ? 0.2 : 0;
+      return [[0.375 + dx, y0, 0.375 + dz, 0.625 + dx, y0 + 0.625, 0.625 + dz]];
+    }
     case 'cross': return [[0.25, 0, 0.25, 0.75, 0.6875, 0.75]];
     case 'door': return [[0.05, 0, 0.05, 0.95, 1, 0.95]];
     case 'stairs': {
@@ -130,7 +138,7 @@ function coverage(info, view, uDir) {
   const rows = (r0, r1) => { let m = 0; for (let r = r0; r < r1; r++) m |= 0xf << (r * 4); return m; };
   const cols = (c0, c1, r0 = 0, r1 = 4) => { let m = 0; for (let r = r0; r < r1; r++) for (let c = c0; c < c1; c++) m |= 1 << (r * 4 + c); return m; };
   if (view === 'top') {
-    if (info.shape === 'post' || info.shape === 'cross') return cols(1, 3, 1, 3);
+    if (info.shape === 'post' || info.shape === 'cross' || info.shape === 'small') return cols(1, 3, 1, 3);
     return full;
   }
   switch (info.shape) {
@@ -139,6 +147,7 @@ function coverage(info, view, uDir) {
     case 'thin': return rows(3, 4);
     case 'slab-top-thin': return rows(0, 1);
     case 'post': return cols(1, 3);
+    case 'small': return cols(1, 3, 1, 4);
     case 'cross': return cols(1, 3, 1, 4);
     case 'stairs': {
       const top = info.props.half === 'top';
@@ -203,8 +212,8 @@ function makeSprites(s) {
   };
 }
 
-/** Render the isometric (south-east) view into a new canvas. */
-function renderIso(structure, { maxW, maxH, bg, scale }) {
+/** Render the isometric view into a new canvas. `turns` = clockwise quarter turns already applied to the structure (for compass labels). */
+function renderIso(structure, { maxW, maxH, bg, scale, turns = 0 }) {
   const c = collect(structure);
   if (!c) return null;
   const [sx, sy, sz] = c.size;
@@ -227,20 +236,24 @@ function renderIso(structure, { maxW, maxH, bg, scale }) {
     for (let k = 0; k <= sz; k++) { const a = proj(0, 0, k), b = proj(sx, 0, k); cv.line(a[0], a[1], b[0], b[1], [0, 0, 0], k % 10 === 0 ? 0.18 : 0.07); }
   }
   const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  // The renderer always looks from the (rotated) south-east; map rotated directions back to real ones.
+  const COMPASS = ['N', 'E', 'S', 'W'];
+  const real = (d) => COMPASS[(COMPASS.indexOf(d) - turns + 4) % 4];
   const compassLabels = () => {
     const label = (x, y, t) => {
       cv.rect(x - 5, y - 2, 11, 11, [255, 255, 255], 0.7);
       cv.text(t, x, y, [40, 40, 90], 1, { align: 'center' });
     };
-    // the south and east edges of the ground are in front, so label them in place…
+    // the two front edges of the ground are in front, so label them in place…
     const sMid = mid(g2, g3), eMid = mid(g1, g2);
-    label(sMid[0] - 12, sMid[1] + 8, 'S');
-    label(eMid[0] + 12, eMid[1] + 8, 'E');
+    label(sMid[0] - 12, sMid[1] + 8, real('S'));
+    label(eMid[0] + 12, eMid[1] + 8, real('E'));
     // …and draw a compass rose in the top-left corner for all four directions
     const cx = 34, cy = 30, L = 16;
     const n = Math.hypot(2, 1);
     const dirs = { N: [2 / n, -1 / n], E: [2 / n, 1 / n], S: [-2 / n, 1 / n], W: [-2 / n, -1 / n] };
-    for (const [t, [dx, dy]] of Object.entries(dirs)) {
+    for (const [d, [dx, dy]] of Object.entries(dirs)) {
+      const t = real(d);
       cv.line(cx, cy, cx + dx * L, cy + dy * L, t === 'N' ? [200, 40, 40] : [60, 60, 90], 0.9);
       label(Math.round(cx + dx * (L + 9)), Math.round(cy + dy * (L + 9)) - 3, t);
     }
@@ -287,13 +300,16 @@ function renderIso(structure, { maxW, maxH, bg, scale }) {
 // ───────────────────────────── orthographic ─────────────────────────────
 
 const VIEWS = {
-  // u axis, v axis (down), depth (nearer = larger), uDir (world direction of +u)
-  top: { u: (x, y, z, c) => x - c.min[0], v: (x, y, z, c) => z - c.min[2], depth: (x, y) => y, W: (c) => c.size[0], H: (c) => c.size[2], uDir: 'east', cov: 'top' },
-  south: { u: (x, y, z, c) => x - c.min[0], v: (x, y, z, c) => c.max[1] - y, depth: (x, y, z) => z, W: (c) => c.size[0], H: (c) => c.size[1], uDir: 'east', cov: 'side' },
-  north: { u: (x, y, z, c) => c.max[0] - x, v: (x, y, z, c) => c.max[1] - y, depth: (x, y, z) => -z, W: (c) => c.size[0], H: (c) => c.size[1], uDir: 'west', cov: 'side' },
-  east: { u: (x, y, z, c) => c.max[2] - z, v: (x, y, z, c) => c.max[1] - y, depth: (x) => x, W: (c) => c.size[2], H: (c) => c.size[1], uDir: 'north', cov: 'side' },
-  west: { u: (x, y, z, c) => z - c.min[2], v: (x, y, z, c) => c.max[1] - y, depth: (x) => -x, W: (c) => c.size[2], H: (c) => c.size[1], uDir: 'south', cov: 'side' },
+  // u axis, v axis (down), depth (nearer = larger), uDir (world direction of +u),
+  // uc/vc: real structure coordinate of column i / row j, with the direction (+1/-1) it changes in
+  top: { u: (x, y, z, c) => x - c.min[0], v: (x, y, z, c) => z - c.min[2], depth: (x, y) => y, W: (c) => c.size[0], H: (c) => c.size[2], uDir: 'east', cov: 'top', uc: (c) => [c.min[0], 1], vc: (c) => [c.min[2], 1] },
+  south: { u: (x, y, z, c) => x - c.min[0], v: (x, y, z, c) => c.max[1] - y, depth: (x, y, z) => z, W: (c) => c.size[0], H: (c) => c.size[1], uDir: 'east', cov: 'side', uc: (c) => [c.min[0], 1], vc: (c) => [c.max[1], -1] },
+  north: { u: (x, y, z, c) => c.max[0] - x, v: (x, y, z, c) => c.max[1] - y, depth: (x, y, z) => -z, W: (c) => c.size[0], H: (c) => c.size[1], uDir: 'west', cov: 'side', uc: (c) => [c.max[0], -1], vc: (c) => [c.max[1], -1] },
+  east: { u: (x, y, z, c) => c.max[2] - z, v: (x, y, z, c) => c.max[1] - y, depth: (x) => x, W: (c) => c.size[2], H: (c) => c.size[1], uDir: 'north', cov: 'side', uc: (c) => [c.max[2], -1], vc: (c) => [c.max[1], -1] },
+  west: { u: (x, y, z, c) => z - c.min[2], v: (x, y, z, c) => c.max[1] - y, depth: (x) => -x, W: (c) => c.size[2], H: (c) => c.size[1], uDir: 'south', cov: 'side', uc: (c) => [c.min[2], 1], vc: (c) => [c.max[1], -1] },
 };
+
+const mod = (a, n) => ((a % n) + n) % n;
 
 function renderOrtho(structure, view, { maxW, maxH, bg, scale }) {
   const c = collect(structure);
@@ -328,23 +344,36 @@ function renderOrtho(structure, view, { maxW, maxH, bg, scale }) {
       }
     }
   }
-  // grid + ticks
+  // grid (1-block lines when big enough, stronger lines on real coordinates that are multiples of 10) + labels
+  const [u0, du] = V.uc(c), [v0, dv] = V.vc(c);
+  // grid line k sits on the world plane between cells k-1 and k
+  const plane = (start, dir, k) => (dir > 0 ? start + k : start + 1 - k);
   const gridA = cell >= 6 ? 0.1 : 0;
   for (let i = 0; i <= gw; i++) {
     const X = ml + i * cell;
-    const strong = i % 10 === 0;
+    const strong = mod(plane(u0, du, i), 10) === 0;
     if (gridA || strong) cv.line(X, mt, X, mt + gh * cell, [0, 0, 0], strong ? 0.25 : gridA);
   }
   for (let j = 0; j <= gh; j++) {
     const Y = mt + j * cell;
-    const strong = j % 10 === 0;
+    const strong = mod(plane(v0, dv, j), 10) === 0;
     if (gridA || strong) cv.line(ml, Y, ml + gw * cell, Y, [0, 0, 0], strong ? 0.25 : gridA);
   }
+  // label cells whose real coordinate is a multiple of `tick` (plus the first cell if no label is near it)
   const tick = Math.max(1, Math.ceil(30 / cell / 5) * 5);
-  for (let i = 0; i < gw; i += tick) cv.text(String(i), ml + i * cell + cell / 2, mt + gh * cell + 5, [90, 90, 100], 1, { align: 'center' });
-  for (let j = 0; j < gh; j += tick) {
-    const label = view === 'top' ? j : gh - 1 - j;
-    cv.text(String(label), ml - 4, mt + j * cell + cell / 2 - 3, [90, 90, 100], 1, { align: 'right' });
+  const near = Math.max(1, Math.ceil(24 / cell));
+  const labelled = (start, dir, n) => {
+    const out = [];
+    for (let i = 0; i < n; i++) if (mod(start + dir * i, tick) === 0) out.push(i);
+    if (!out.length || out[0] >= near) out.unshift(0);
+    return out;
+  };
+  for (const i of labelled(u0, du, gw)) cv.text(String(u0 + du * i), ml + i * cell + cell / 2, mt + gh * cell + 5, [90, 90, 100], 1, { align: 'center' });
+  // vertical axis: label from the bottom row (lowest y / southern-most z) so the base is always marked
+  const vb = gh - 1, vStart = v0 + dv * vb;
+  for (const k of labelled(vStart, -dv, gh)) {
+    const j = vb - k;
+    cv.text(String(v0 + dv * j), ml - 4, mt + j * cell + cell / 2 - 3, [90, 90, 100], 1, { align: 'right' });
   }
   return { canvas: cv, cell, grid: [gw, gh], margins: { ml, mt } };
 }
@@ -353,12 +382,44 @@ function renderOrtho(structure, view, { maxW, maxH, bg, scale }) {
 
 const BG_ISO = [178, 206, 234];
 const BG_PANEL = [238, 240, 244];
-const ISO_ROT = { iso: 0, 'iso-se': 0, 'iso-sw': 1, 'iso-nw': 2, 'iso-ne': 3 };
+// Clockwise quarter turns that bring the requested corner to the south-east (where the iso camera sits).
+const ISO_ROT = { iso: 0, 'iso-se': 0, 'iso-ne': 1, 'iso-nw': 2, 'iso-sw': 3 };
 
 function emptyImage(text = 'EMPTY') {
   const cv = new Canvas(160, 60, BG_PANEL);
   cv.text(text, 80, 26, [120, 120, 130], 1, { align: 'center' });
   return cv;
+}
+
+/** Area-average downscale so the longest side is ≤ maxSize (a no-op when it already fits). */
+function fitCanvas(cv, maxSize) {
+  const f = maxSize / Math.max(cv.w, cv.h);
+  if (!(f < 1)) return cv;
+  const W = Math.max(1, Math.floor(cv.w * f)), H = Math.max(1, Math.floor(cv.h * f));
+  const sx = cv.w / W, sy = cv.h / H;
+  const out = new Canvas(W, H);
+  const src = cv.data, dst = out.data;
+  // separable box filter: per-axis source spans with fractional edge weights
+  const spans = (n, s, limit) => Array.from({ length: n }, (_, i) => {
+    const a = i * s, b = Math.min(limit, (i + 1) * s), w = [];
+    for (let k = Math.floor(a); k < Math.ceil(b); k++) w.push([k, Math.min(b, k + 1) - Math.max(a, k)]);
+    return w;
+  });
+  const xs = spans(W, sx, cv.w), ys = spans(H, sy, cv.h);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let r = 0, g = 0, b = 0, t = 0;
+      for (const [yy, wy] of ys[y]) {
+        for (const [xx, wx] of xs[x]) {
+          const w = wx * wy, i = (yy * cv.w + xx) * 4;
+          r += src[i] * w; g += src[i + 1] * w; b += src[i + 2] * w; t += w;
+        }
+      }
+      const o = (y * W + x) * 4;
+      dst[o] = r / t; dst[o + 1] = g / t; dst[o + 2] = b / t; dst[o + 3] = 255;
+    }
+  }
+  return out;
 }
 
 /**
@@ -367,11 +428,12 @@ function emptyImage(text = 'EMPTY') {
  */
 export function renderPreview(structure, opts = {}) {
   const view = (opts.view ?? 'sheet').toLowerCase();
-  const maxSize = opts.maxSize ?? 1600;
+  const maxSize = Math.max(16, Math.floor(opts.maxSize ?? 1600));
   let cv;
   if (view in ISO_ROT) {
-    const s = ISO_ROT[view] ? structure.transformed({ rotate: ISO_ROT[view] * 90 }) : structure;
-    const r = renderIso(s, { maxW: maxSize, maxH: maxSize, bg: BG_ISO, scale: opts.scale });
+    const turns = ISO_ROT[view];
+    const s = turns ? structure.transformed({ rotate: turns * 90 }) : structure;
+    const r = renderIso(s, { maxW: maxSize, maxH: maxSize, bg: BG_ISO, scale: opts.scale, turns });
     cv = r ? r.canvas : emptyImage();
   } else if (view in VIEWS) {
     const r = renderOrtho(structure, view, { maxW: maxSize, maxH: maxSize, bg: BG_PANEL, scale: opts.scale });
@@ -382,6 +444,8 @@ export function renderPreview(structure, opts = {}) {
   } else {
     throw new Error(`Unknown view "${opts.view}" (sheet|iso|iso-ne|iso-nw|iso-sw|top|south|north|east|west)`);
   }
+  // an explicit scale is honoured as asked; otherwise the longest side never exceeds maxSize
+  if (opts.scale == null) cv = fitCanvas(cv, maxSize);
   return { png: cv.png(), width: cv.w, height: cv.h, view };
 }
 

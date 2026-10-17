@@ -197,7 +197,9 @@ function resolveColor(name) {
 }
 
 const CROSS_RE = /(sapling|_flower$|tulip|^poppy$|^dandelion$|^allium$|^azure_bluet$|^oxeye_daisy$|^cornflower$|^lily_of_the_valley$|^wither_rose$|^short_grass$|^tall_grass$|^fern$|^large_fern$|bush$|^wheat$|^carrots$|^potatoes$|^beetroots$|^sugar_cane$|^(brown|red)_mushroom$|_fungus$|_roots$|^sunflower$|^lilac$|^rose_bush$|^peony$|^kelp|seagrass$|^torchflower|_sprouts$|^nether_wart$|^cobweb$|^dead_bush$|^bamboo$|^pitcher_|vine)/;
-const POST_RE = /(_fence$|_wall$|chain$|^end_rod$|^lightning_rod$|torch$|^candle$|_candle$|lantern$|^flower_pot$|^potted_|^bell$|^ladder$|_sign$|_banner$|^lever$|_button$|^tripwire_hook$|^scaffolding$|_head$|_skull$)/;
+const POST_RE = /(_fence$|_wall$|chain$|^end_rod$|^lightning_rod$|^ladder$|_sign$|_banner$|^scaffolding$)/;
+// small attachments: drawn as a short, narrow stub (wall-mounted ones hug their wall)
+const SMALL_RE = /(torch$|^candle$|_candle$|(?<!sea_|jack_o_)lantern$|^flower_pot$|^potted_|^bell$|^lever$|_button$|^tripwire_hook$|(?<!piston)_head$|_skull$)/;
 const THIN_RE = /(carpet$|pressure_plate$|rail$|^redstone_wire$|^repeater$|^comparator$|^lily_pad$|^pink_petals$|^wildflowers$|^leaf_litter$|^snow$|^tripwire$|_trapdoor$)/;
 
 /**
@@ -222,6 +224,7 @@ export function blockColor(block) {
     c = { ...c, a: Math.min(c.a, name === 'iron_bars' ? 0.55 : 0.4) };
   } else if (name === 'snow') shape = Number(b.props.layers ?? 1) >= 8 ? 'cube' : 'thin';
   else if (THIN_RE.test(name)) shape = 'thin';
+  else if (SMALL_RE.test(name)) shape = 'small';
   else if (POST_RE.test(name)) shape = 'post';
   else if (CROSS_RE.test(name)) shape = 'cross';
   else if (/_bed$/.test(name)) shape = 'slab-bottom';
