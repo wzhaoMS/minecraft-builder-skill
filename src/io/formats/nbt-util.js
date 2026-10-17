@@ -302,10 +302,11 @@ function compactSign(kept) {
     const v = { ...s.value };
     if (v.color?.type === 'string' && v.color.value === 'black') delete v.color;
     if (v.has_glowing_text && Number(v.has_glowing_text.value) === 0) delete v.has_glowing_text;
-    for (const key of ['messages', 'filtered_messages']) {
-      const m = v[key];
-      if (m?.type === 'list' && m.value.value.every((e) => isEmptyText({ type: m.value.type, value: e }))) delete v[key];
-    }
+    // filtered text that equals the text is the same as none (the game falls back to the text);
+    // blank text is the default only when nothing filtered is kept apart from it
+    if (v.filtered_messages && v.messages && tagToSnbt(v.filtered_messages) === tagToSnbt(v.messages)) delete v.filtered_messages;
+    const blank = (m) => m?.type === 'list' && m.value.value.every((e) => isEmptyText({ type: m.value.type, value: e }));
+    if (blank(v.messages) && !v.filtered_messages) delete v.messages;
     if (Object.keys(v).length) kept[side] = { type: 'compound', value: v };
     else delete kept[side];
   }

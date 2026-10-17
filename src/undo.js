@@ -48,8 +48,11 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
     data.structure.forEach((x, y, z, b) => restore.set(x, y, z, b));
   } else {
     let current = null;
+    let dataUnread = new Set(); // positions whose block data (sign text…) could not be read
     if (transport.canRead && !force) {
-      current = (await withGamerules(transport, { sendCommandFeedback: false }, () => captureRegion(transport, data.box), { journalDir: stateDir })).structure;
+      const cap = await withGamerules(transport, { sendCommandFeedback: false }, () => captureRegion(transport, data.box), { journalDir: stateDir });
+      current = cap.structure;
+      dataUnread = new Set((cap.lostData ?? []).map((p) => p.join(',')));
     } else if (!force) {
       throw new BuildError('Undo needs the bot transport to check for edits made since the build', {
         code: 'UNDO_NEEDS_READ', hint: 'Use --transport bot, or pass --force to restore without checking.',
@@ -71,8 +74,8 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
       if (owned.every((b) => sameBlock(b, before))) return;
       if (current) {
         const now = current.get(x, y, z);
-        if (now == null) {
-          // could not read it: we cannot tell whether someone edited it since, so leave it alone
+        if (now == null || dataUnread.has(`${x},${y},${z}`)) {
+          // could not read it (or its sign text…): we cannot tell whether someone edited it since, so leave it alone
           unreadable++;
           return;
         }

@@ -445,7 +445,7 @@ test('undo stops before taking a basin down when removing its water failed', asy
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('verify checks sign text too: a wrong text is repaired; a persistent other spelling is reported, not failed', async () => {
+test('verify checks sign text too: a wrong text is repaired; text still different after the repair fails verification', async () => {
   const sim = new SimTransport();
   const s = new Structure({ name: 'sign' }).set(0, 0, 0, 'oak_sign[rotation=0]{front_text:{messages:["B","","",""]}}');
   let first = true;
@@ -453,14 +453,51 @@ test('verify checks sign text too: a wrong text is repaired; a persistent other 
   const r = await executeBuild({ structure: s, transport: sim, at: [0, 0, 0], undo: false, verify: true, ...quiet });
   assert.equal(r.verify.repaired, 1, JSON.stringify(r.verify));
   assert.equal(r.verify.dataMismatches, 0);
+  assert.equal(r.ok, true);
   assert.match(sim.data.get('0,0,0'), /"B"/);
   const sim2 = new SimTransport();
   sim2.storeData = () => '{front_text:{messages:["something else","","",""]}}';
   const r2 = await executeBuild({ structure: s, transport: sim2, at: [0, 0, 0], undo: false, verify: true, ...quiet });
   assert.equal(r2.verify.dataMismatches, 1);
-  assert.equal(r2.verify.remaining, 0);
-  assert.equal(r2.ok, true);
+  assert.equal(r2.verify.remaining, 1);
+  assert.equal(r2.ok, false);
   assert.ok(r2.warnings.some((w) => /other block data/.test(w)), r2.warnings.join('\n'));
+  // block data that can't be read is unreadable, never a match (even when a blank sign was asked for)
+  const sim3 = new SimTransport();
+  sim3.failData = () => true;
+  const blank = new Structure({ name: 'blank' }).set(0, 0, 0, 'oak_sign[rotation=0]{front_text:{messages:["","","",""]}}');
+  const r3 = await executeBuild({ structure: blank, transport: sim3, at: [0, 0, 0], undo: false, verify: true, ...quiet });
+  assert.equal(r3.verify.unreadable, 1, JSON.stringify(r3.verify));
+  assert.equal(r3.ok, false);
+});
+
+test('undo leaves a sign whose text could not be read alone (unreadable, snapshot kept)', async () => {
+  const dir = tmp();
+  const sim = new SimTransport();
+  const s = new Structure({ name: 'board' }).set(0, 0, 0, 'oak_sign[rotation=0]');
+  const r = await executeBuild({ structure: s, transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet });
+  sim.data.set('0,0,0', '{front_text:{messages:["player text","","",""]}}');
+  sim.failData = (k) => k === '0,0,0';
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.ok, false);
+  assert.equal(u.unreadable, 1);
+  assert.match(sim.get(0, 0, 0), /^oak_sign/, 'not removed');
+  assert.match(sim.data.get('0,0,0'), /player text/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('compact sign data keeps filtered text unless it equals the text', async () => {
+  const { blockEntitySnbt } = await import('../src/io/formats/nbt-util.js');
+  const str = (v) => ({ type: 'string', value: v });
+  const list = (...v) => ({ type: 'list', value: { type: 'string', value: v } });
+  const side = (messages, filtered) => ({ type: 'compound', value: { messages, ...(filtered ? { filtered_messages: filtered } : {}), color: str('black'), has_glowing_text: { type: 'byte', value: 0 } } });
+  const text = list('Hi', '', '', '');
+  const blank = list('', '', '', '');
+  assert.equal(blockEntitySnbt({ front_text: side(text, blank), back_text: side(blank) }, { compact: true, maxLength: Infinity }).snbt,
+    '{front_text:{messages:["Hi","","",""],filtered_messages:["","","",""]}}', 'blank filtered text is kept apart from real text');
+  assert.equal(blockEntitySnbt({ front_text: side(text, list('Hi', '', '', '')), back_text: side(blank, blank) }, { compact: true, maxLength: Infinity }).snbt,
+    '{front_text:{messages:["Hi","","",""]}}');
+  assert.equal(blockEntitySnbt({ front_text: side(blank), back_text: side(blank), is_waxed: { type: 'byte', value: 0 } }, { compact: true }).snbt, null, 'a blank sign has no data');
 });
 
 test('snapshot ids are unique and never overwrite each other', () => {

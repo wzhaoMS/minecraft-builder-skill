@@ -64,8 +64,9 @@ RCON, the bot's connection and its operator status, and prints a fix for each pr
   `/setblock` pass. The report separates `matched`, `mismatches`, `remaining` and `unreadable`
   (chunk not available — never counted as OK). It checks against your blueprint; to see what is
   really there, `mcb snapshot --from … --to … --render live.png`. Block data the blueprint asks
-  for (sign text, banner patterns, heads) is checked and repaired too; if the server keeps it
-  spelled differently even after the repair, it is counted in `dataMismatches` with a warning.
+  for (sign text, banner patterns, heads) is checked and repaired too; data still different after
+  the repair counts in `remaining` (`dataMismatches` says how many of those are data-only, e.g. an
+  old sign format this Minecraft version ignores) and data that can't be read counts as unreadable.
 * `mcb plan` shows the impact (blocks replaced by type, containers at risk) without changing anything.
 * If a build is killed, `send_command_feedback` may stay off until the next `mcb` build or
   `mcb doctor` restores it (both do it automatically from the journal in `.mcb/`).

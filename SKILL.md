@@ -92,7 +92,7 @@ file** (or in the current directory without one) — run `undo` with the same co
 
 Build reports (`--json`, schema `mcb.build-report/1`) include `ok`, `status`
 (`complete`/`partial`), `box` (world bounds), `facing`, `impact` (replaced blocks), `plan.commands`,
-`errors[]` (with hints), `verify.{matched,mismatches,repaired,remaining,unreadable}` and
+`errors[]` (with hints), `verify.{matched,mismatches,repaired,remaining,dataMismatches,unreadable}` and
 `undo.{id,command}`. Progress and log lines go to stderr; stdout carries only the result.
 Re-running a build is safe and cheap: blocks that are already correct are skipped (grass that
 turned to dirt under your own blocks counts as correct), and a re-run that changes nothing saves

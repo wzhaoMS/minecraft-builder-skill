@@ -615,8 +615,8 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
         else if (readData && nbtPart(expected) && clientSeesData(expected)) {
           // the block data the blueprint asks for (sign text, banner patterns…) as far as clients see it
           const d = readData(x, y, z);
-          const got = d.snbt ? actual + d.snbt : actual;
-          if (!dataSatisfied(expected, got)) mismatches.push({ pos: [x, y, z], expected, actual: got, data: true });
+          if (!d.snbt && d.reason) unreadable.push({ pos: [x, y, z], expected, data: true });
+          else if (!dataSatisfied(expected, d.snbt ? actual + d.snbt : actual)) mismatches.push({ pos: [x, y, z], expected, actual: d.snbt ? actual + d.snbt : actual, data: true });
         }
       }
       progress({ stage, done: ++i, total: byTile.size });
@@ -633,13 +633,13 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
     mismatches = re.mismatches;
     unreadable = unreadable.concat(re.unreadable);
   }
-  // block states decide `remaining`; block data that still differs after the repair is reported
-  // apart (dataMismatches) — the server may store the same text in another spelling
-  const states = (list) => list.filter((m) => !m.data);
+  // `remaining` counts every block still wrong, block data (sign text, patterns…) included;
+  // dataMismatches says how many of those are data-only
+  const dataOnly = (list) => list.filter((m) => m.data).length;
   const result = {
     checked: all.length - unreadable.length, matched: all.length - unreadable.length - mismatches.length,
-    mismatches: mismatches.length, unreadable: unreadable.length, repaired: 0, remaining: states(mismatches).length,
-    dataMismatches: mismatches.length - states(mismatches).length,
+    mismatches: mismatches.length, unreadable: unreadable.length, repaired: 0, remaining: mismatches.length,
+    dataMismatches: dataOnly(mismatches),
     examples: mismatches.slice(0, 10),
   };
   if (repair && mismatches.length) {
@@ -659,8 +659,8 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
     await settle(transport, 600);
     const again = await check(mismatches.map((m) => [...m.pos, m.expected]), 'recheck');
     result.repaired = mismatches.length - again.mismatches.length - again.unreadable.length;
-    result.remaining = states(again.mismatches).length;
-    result.dataMismatches = again.mismatches.length - result.remaining;
+    result.remaining = again.mismatches.length;
+    result.dataMismatches = dataOnly(again.mismatches);
     result.unreadable += again.unreadable.length;
     result.matched += result.repaired;
     result.examples = again.mismatches.slice(0, 10);

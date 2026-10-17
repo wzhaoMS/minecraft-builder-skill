@@ -57,10 +57,12 @@ build → verify → undo loop. Tested end-to-end against Paper 1.21.11 (locally
   Block data an undo could not put back (too long for one command, or unreadable) is protected
   like a chest — and so is all of it with `--no-undo`. Undo treats a sign side written on after
   the build as an edit (left alone), and `--verify` checks sign text, banner patterns and heads too
-  (repairing them; other spellings the server keeps are reported as `dataMismatches`).
-- Unit tests (274, incl. an in-memory server for safety regressions), end-to-end tests against a
-  real server (14, incl. a Nether build/undo and a bot that logs in inside another world), GitHub
-  Actions CI on Windows/macOS/Linux × Node 22/24 plus an e2e job.
+  (repaired once; data still different afterwards fails verification — `dataMismatches` — and
+  data that can't be read counts as unreadable).
+- Unit tests (293, incl. an in-memory server for safety regressions), end-to-end tests against a
+  real server (17, incl. a Nether build/undo, a bot that logs in inside another world, a data
+  pack run on the server and sign text through undo), GitHub Actions CI on Windows/macOS/Linux ×
+  Node 22/24 plus an e2e job.
 
 ### Changed
 - SKILL.md rewritten as an agent-first workflow guide; README, troubleshooting, blueprint format,

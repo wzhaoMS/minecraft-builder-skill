@@ -61,6 +61,7 @@ export class SimTransport {
   }
 
   readBlockData(x, y, z) {
+    if (this.failData?.(`${x},${y},${z}`)) return { snbt: null, reason: 'unreadable' };
     return { snbt: this.data.get(`${x},${y},${z}`) ?? null };
   }
 
