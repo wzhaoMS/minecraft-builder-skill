@@ -21,6 +21,7 @@ export async function captureRegion(transport, box, { tile = transport.readTileS
   let done = 0;
   for (const t of tiles) {
     await transport.loadArea({ x1: t.x1, z1: t.z1, x2: t.x2, z2: t.z2 }, { topY: y2 });
+    await transport.syncWorld?.(); // include changes made by others up to now
     for (let y = t.y1; y <= t.y2; y++) {
       for (let z = t.z1; z <= t.z2; z++) {
         for (let x = t.x1; x <= t.x2; x++) {

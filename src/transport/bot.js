@@ -390,6 +390,17 @@ export class BotTransport {
     return false;
   }
 
+  /**
+   * Make sure the client's copy of the world is current: changes made by others (players, RCON,
+   * redstone) are flushed to the client at the end of a server tick, so round-trip a barrier and
+   * give it two more ticks.
+   */
+  async syncWorld() {
+    const { ack } = await this._sendAcked([], 15_000);
+    await ack;
+    await sleep(120);
+  }
+
   /** Make sure the chunks for an area are loaded server-side: hover above its centre. */
   async loadArea(area, { topY = 100 } = {}) {
     const cx = Math.floor((area.x1 + area.x2) / 2) + 0.5;

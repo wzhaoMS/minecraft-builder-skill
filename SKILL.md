@@ -127,7 +127,22 @@ Full spec: [docs/blueprint-format.md](docs/blueprint-format.md).
 
 ## 5. Generators
 
-GENERATORS_TABLE
+| Generator | Good for | Key params (defaults) |
+|---|---|---|
+| `house` | cottages, homes | `width=8 depth=8 height=5 wall=red_concrete roof=dark_oak_planks roofStyle=gable\|hip\|flat chimney interior` |
+| `tower` | castle/watch towers | `radius=4 height=18 shape=round\|square roof=cone\|crenellated\|flat material=stone_bricks` |
+| `castle` | keeps, forts | `width=31 depth=31 wallHeight=8 towerRadius=4 towerRoof=cone material accent gate` |
+| `skyscraper` | modern towers | `style=glass\|setback\|cylinder width=16 depth=16 height=96 body glass accent spire` |
+| `city` | whole districts | `width=160 depth=160 blockSize=22 streetWidth=5 maxHeight=90 parks=0.15 highway` |
+| `tree` | landscaping | `type=oak\|birch\|spruce\|jungle\|acacia\|dark_oak\|cherry\|pale_oak\|mangrove\|azalea height=0 (auto)` |
+| `road` / `bridge` | infrastructure | road: `length=32 width=7 axis=x\|z lamps=12`; bridge: `length=24 style=arch\|beam\|suspension` |
+| `fountain` / `arch` / `wall` | plazas, gates, walls | `radius=4`; `width=9 height=8`; `width=10 height=5 crenellations` |
+| `text` | signs, logos, labels | `text=HELLO block=gold_block font=5x7\|3x5 scale=1 facing=south plane=vertical\|flat background` |
+| `pixelart` | images → blocks | `image=<png/jpg> width=64 palette=concrete\|wool\|terracotta\|concrete+wool\|full dither plane` |
+| `sphere` `dome` `cylinder` `cone` `pyramid` `box` | primitives | `radius`, `height`, `material`, `hollow` |
+
+Generators are deterministic (`-p seed=N` changes the random details), put their footprint's
+north-west corner at x = z = 0 and face south. Compose them with JSON `parts` or `ctx.gen(...)`.
 
 `node bin/mcb.js generators <name>` lists every param with type, default and range. Use
 `-p key=value` (repeatable) or `--params '{"key":value}'`.

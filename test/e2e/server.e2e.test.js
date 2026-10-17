@@ -77,6 +77,8 @@ test('bot build → verify 100% → undo restores the original blocks', { skip: 
 test('undo leaves blocks edited after the build alone and reports them', { skip: !enabled || !cfg.rconPassword }, async () => {
   const s = await tower();
   const at = [1000, Y, 1060];
+  await rcon.loadArea({ x1: 996, z1: 1056, x2: 1010, z2: 1070 });
+  await rcon.command(`fill 996 ${Y} 1056 1010 ${Y + 12} 1070 air`); // fresh area on every run
   const r = await executeBuild({ structure: s, transport: bot, at, stateDir: state });
   assert.ok(r.undo?.id);
   // a "player" edits one wall block after the build
@@ -94,7 +96,8 @@ test('undo leaves blocks edited after the build alone and reports them', { skip:
 });
 
 test('builds refuse to destroy chests/signs (nothing changes) unless forced', { skip: !enabled || !cfg.rconPassword }, async () => {
-  await rcon.loadArea({ x1: 1100, z1: 1060, x2: 1110, z2: 1070 });
+  await rcon.loadArea({ x1: 1096, z1: 1056, x2: 1110, z2: 1070 });
+  await rcon.command(`fill 1096 ${Y} 1056 1110 ${Y + 12} 1070 air`); // fresh area on every run
   await rcon.command(`setblock 1102 ${Y + 1} 1062 chest[facing=north]`);
   const s = await tower();
   await assert.rejects(

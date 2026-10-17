@@ -23,13 +23,13 @@ node bin/mcb.js undo                                        # …and is gone aga
 
 | | |
 |---|---|
-| **Design the way agents think** | ASCII-layer JSON blueprints, a small JS DSL (`fill`, `sphere`, `paste`, `transformed`…), 20+ parametric generators (house, castle, tower, skyscraper, tree, bridge, road, city, text, pixel art…), or any `.schem` / `.nbt` / `.litematic`. |
-| **See before you build** | `mcb preview` renders an isometric view, a top view (north up) and front/side elevations into one PNG — agents (and humans) catch mistakes before touching the world. |
-| **Fast** | Voxels are merged into the fewest `/fill` boxes (a 500-block cottage is ~70 commands; 1M-block cities build in minutes). |
+| **Design the way agents think** | ASCII-layer JSON blueprints, a small JS DSL (`fill`, `sphere`, `paste`, `transformed`…), 19 parametric generators (house, castle, tower, skyscraper, tree, bridge, road, fountain, city, text, pixel art…), or any `.schem` / `.nbt` / `.litematic`. |
+| **See before you build** | `mcb preview` renders an isometric view, a top view (north up) and front/side elevations into one PNG — agents (and humans) catch mistakes before touching the world. `mcb plan` says exactly where it lands and what it would replace. |
+| **Fast** | Voxels are merged into the fewest `/fill` boxes: a 500-block cottage is ~70 commands, the 445k-block Georgia Tech campus scene builds **and verifies** in about 2 minutes. |
 | **Correct** | Block states rotate with the build, doors/beds get both halves, leaves don't decay, torches/plants are placed after their supports, fluids last. `--verify` reads every block back and repairs mismatches. |
-| **Safe** | Every bot build saves an undo snapshot (`mcb undo`). Rebuilding only changes what differs. Op command spam is muted and restored, even on Ctrl+C. Kicked mid-build? It reconnects and continues. |
-| **Works anywhere** | Windows, macOS, Linux. Bot (mineflayer) or RCON transport. Single-player worlds via generated data packs. A fresh Paper server in one command, Java auto-install optional. |
-| **Agent-first** | [`SKILL.md`](SKILL.md) teaches an agent the workflow; every command has `--json` output and errors come with a concrete `hint:`; `mcb doctor` diagnoses setups. |
+| **Safe** | Nothing changes until the blueprint is valid and an undo snapshot is taken; chests/signs are never overwritten without `--force`; `mcb undo` restores what the build changed and leaves later edits alone. Rebuilding only changes what differs. Kicked mid-build? It reconnects and continues. Op command echo is muted and restored, even after a crash. |
+| **Works anywhere** | Windows, macOS, Linux. Bot (mineflayer) or RCON transport, any dimension. Single-player worlds via generated data packs. A fresh Paper server in one command, Java auto-install optional. |
+| **Agent-first** | [`SKILL.md`](SKILL.md) teaches an agent the workflow; every command has `--json` output and errors come with a stable `code` and a concrete `hint:`; `mcb doctor` diagnoses setups; `mcb mcp` exposes everything as MCP tools (with preview images). |
 
 ## Install
 
@@ -63,12 +63,15 @@ design guidance and troubleshooting. Then just ask: *"build me a medieval castle
 | `mcb info <blueprint>` | Size, block counts, command plan, time estimate, lint warnings |
 | `mcb validate <blueprint>` | Check every block state against Minecraft data; suggest fixes for typos |
 | `mcb preview <blueprint> -o x.png` | Render iso / top / elevation views to a PNG |
-| `mcb build <blueprint> --at x,y,z \| --near <player>` | Build it (`--facing`, `--rotate`, `--mirror`, `--clear`, `--ground`, `--verify`, `--strict`, `--mode fill\|layered\|hand`, `--dry-run`) |
-| `mcb undo [id] [--list]` | Restore the area as it was before a build |
+| `mcb plan <blueprint> --at x,y,z \| --near <player>` | Read-only: where it lands, what it replaces (incl. chests/signs), commands needed |
+| `mcb build <blueprint> --at x,y,z \| --near <player>` | Build it (`--facing`, `--rotate`, `--mirror`, `--clear`, `--ground`, `--verify`, `--strict`, `--mode fill\|layered\|hand`, `--dimension`, `--dry-run`) |
+| `mcb watch <blueprint> --at …` | Rebuild live every time you save the file (only differences are sent; removed parts are restored) |
+| `mcb undo [id] [--list] [--force]` | Restore what a build changed; blocks edited since are left alone and listed |
 | `mcb snapshot --from … --to … -o x.json` | Copy a region of the world into a blueprint (`--render` for a PNG) |
 | `mcb export <blueprint> -o x.schem\|x.nbt\|x.json\|x.mcfunction` | Convert; `--datapack <dir>` makes a data pack for single-player |
 | `mcb where [player]` | Player position + facing |
 | `mcb cmd "<command>" …` | Run raw server commands |
+| `mcb mcp` | Run as an MCP server (stdio) — see [docs/mcp.md](docs/mcp.md) |
 
 `<blueprint>` = a `.json` / `.js` / `.mjs` file, a `.schem` / `.schematic` / `.nbt` / `.litematic`
 file, or `gen:<generator>` with `-p key=value` parameters.
@@ -78,32 +81,46 @@ Full format reference: [docs/blueprint-format.md](docs/blueprint-format.md).
 
 ```bash
 mcb preview examples/blueprints/cottage.json -o cottage.png       # hand-drawn ASCII-layer blueprint
+mcb preview examples/blueprints/watchtower.mjs -p height=20        # parametric JS blueprint
+mcb plan  gen:castle -p width=41 -p towerRadius=5 --near Steve    # what would it replace?
 mcb build gen:castle -p width=41 -p towerRadius=5 --near Steve --clear --verify
 mcb build gen:text -p "text=WELCOME" -p block=gold_block --at 100,70,-20 --facing east
 mcb build gen:pixelart -p image=logo.png -p width=64 --at 0,64,0
-mcb build gen:city -p width=200 -p depth=200 --at 500,-60,500 --transport rcon
-mcb build examples/scenes/gt-campus.mjs --at 300,-60,-500 --clear
+mcb build gen:city -p width=200 -p depth=200 --at 500,-50,500 --transport rcon
+mcb build examples/scenes/gt-campus.mjs --at 300,-55,-500 --clear --verify
 mcb export gen:house --datapack "%APPDATA%/.minecraft/saves/MyWorld/datapacks" --name house
 ```
+
+| | | |
+|---|---|---|
+| <img src="docs/media/cottage.png" width="260"><br>`examples/blueprints/cottage.json` | <img src="docs/media/watchtower.png" width="260"><br>`examples/blueprints/watchtower.mjs` | <img src="docs/media/city.png" width="260"><br>`gen:city` |
+| <img src="docs/media/gt-campus.png" width="260"><br>`examples/scenes/gt-campus.mjs` (ported from v1) | <img src="docs/media/skyscraper.png" width="260"><br>`gen:skyscraper -p style=setback` | <img src="docs/media/tech-tower-demo.gif" width="260"><br>v1 demo: the bot placing TECH by hand |
 
 ## How it works
 
 ```
 blueprint ─► Structure (sparse 16³ sections + palette) ─► lint (validate, complete doors/beds, support checks)
-          ─► placement (anchor, facing → rotate block states) ─► plan (greedy /fill boxes, phases, 64×64 tiles)
-          ─► transport (bot: acked batches via /tellraw barriers, rate-capped, reconnecting │ rcon │ dry-run)
-          ─► verify (read back, repair) ─► report (+ undo snapshot)
+          ─► placement (anchor, facing, dimension → rotate block states) ─► plan (greedy /fill boxes, phases, 64×64 tiles)
+          ─► read-only checks (snapshot for undo, impact, container guard)
+          ─► transport (bot: acked batches via /tellraw barriers, rate- and volume-capped, reconnecting │ rcon │ dry-run)
+          ─► verify (read back, one repair pass) ─► report (mcb.build-report/1)
 ```
 
 * **Acknowledged command batches.** Not every Minecraft command answers, so per-command replies
   can't be matched up. `mcb` sends a batch, then `/tellraw @s "mcb:sync:<n>"`; when that comes
   back, everything before it has run and any errors that arrived belong to that batch.
 * **Rate limits.** Paper kicks clients above 500 packets/s (averaged over 7 s); `mcb` caps at
-  250 commands/s with at most three unacknowledged batches in flight.
+  250 commands/s and ~200k changed blocks per acknowledgement, with at most three batches in flight.
 * **Chunks.** Since 1.21.9 even spawn chunks aren't kept loaded, so `mcb` works tile by tile:
-  the bot hovers over each 64×64 tile (RCON uses `/forceload`, removing only what it added).
-* **Version quirks.** 1.21.11 renamed gamerules (`logAdminCommands` → `log_admin_commands`…);
-  `mcb` tries both. PaperMC's old download API now returns 410 — `mcb` uses the new Fill API.
+  the bot hovers over each tile (RCON uses `/forceload`, removing only the tickets it added).
+  Block reads come straight from chunk state ids — millions of blocks per second for snapshots
+  and verification.
+* **Quiet.** Operators normally see every command a bot runs (`[BuilderBot: Changed the block…]`);
+  `mcb` switches `send_command_feedback` off for the build and restores it (journaled, so even a
+  crash is repaired on the next run).
+* **Version quirks.** 1.21.11 renamed gamerules (`sendCommandFeedback` → `send_command_feedback`…)
+  and `chain` became `iron_chain`; `mcb` validates against the server version and tries both
+  gamerule names. PaperMC's old download API now returns 410 — `mcb` uses the new Fill API.
 
 ## Development
 
@@ -130,7 +147,8 @@ Paper, starts it, and builds/verifies/undoes real structures.
 
 Also fixed along the way: the bot's hard-coded `version: '1.21.11'` vs the 1.21.1 server,
 the hard-coded player name `alphasuperduper`, `/tmp` and `/home/wei` paths, a wrong offline UUID
-in the generated `ops.json`, leaves decaying, mirrored text, and gamerules silently failing on 1.21.11.
+in the generated `ops.json` (the bot was never actually op'd by it), leaves decaying, mirrored
+text, `chain` (now `iron_chain`), floating lanterns, and gamerules silently failing on 1.21.11.
 
 ## Credits
 
