@@ -127,8 +127,8 @@ export function saveSnapshot(stateDir, snap, { overwrite = false } = {}) {
   // Overwrites (watch) replace atomically via rename; new snapshots are hard-linked into place,
   // which fails instead of clobbering if the name appeared in the meantime.
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, encodeSnapshot(snap));
   try {
+    fs.writeFileSync(tmp, encodeSnapshot(snap));
     if (overwrite) {
       fs.renameSync(tmp, file);
     } else {
@@ -136,9 +136,13 @@ export function saveSnapshot(stateDir, snap, { overwrite = false } = {}) {
         fs.linkSync(tmp, file);
       } catch (e) {
         if (e.code === 'EEXIST') throw exists();
-        // filesystems without hard links: best effort
-        if (fs.existsSync(file)) throw exists();
-        fs.renameSync(tmp, file);
+        if (!NO_HARDLINKS.has(e.code)) throw e;
+        // filesystem without hard links: an exclusive copy still never clobbers
+        try {
+          fs.copyFileSync(tmp, file, fs.constants.COPYFILE_EXCL);
+        } catch (e2) {
+          throw e2.code === 'EEXIST' ? exists() : e2;
+        }
       }
     }
   } finally {
@@ -146,6 +150,8 @@ export function saveSnapshot(stateDir, snap, { overwrite = false } = {}) {
   }
   return file;
 }
+
+const NO_HARDLINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EMLINK']);
 
 /** Snapshots newest first: [{ id, file, mtime }] */
 export function listSnapshots(stateDir) {

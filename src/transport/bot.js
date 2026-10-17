@@ -120,15 +120,20 @@ async function spawnBotOnce(cfg) {
  * creates empty placeholder columns when a light update precedes the chunk; those must not be
  * read as "all air" (that would corrupt undo snapshots and blind the container check).
  */
-function trackChunks(bot) {
-  let world = null;
+export function trackChunks(bot) {
+  let world = null, dim = null;
   const loaded = new Set();
-  const sync = (w) => { if (w !== world) { loaded.clear(); world = w; } };
+  const dimension = () => bot.game?.dimension ?? null;
+  // forget everything when the world object or the dimension changes (mineflayer reuses its
+  // World object across dimension switches and unloads the columns internally)
+  const sync = (w) => { if (w !== world || dimension() !== dim) { loaded.clear(); world = w; dim = dimension(); } };
   const add = (cx, cz) => { sync(bot.world); loaded.add(`${cx},${cz}`); };
   // mineflayer's own handlers were registered first, so the column is in bot.world by now
   bot._client.on('map_chunk', (p) => add(p.x, p.z));
   bot._client.on('map_chunk_bulk', (p) => { for (const m of p.meta ?? []) add(m.x, m.z); });
-  bot._client.on('unload_chunk', (p) => { sync(bot.world); loaded.delete(`${p.chunkX},${p.chunkZ}`); });
+  bot._client.on('unload_chunk', (p) => loaded.delete(`${p.chunkX},${p.chunkZ}`));
+  // columns unloaded inside mineflayer (dimension switch, world reset) arrive as world events
+  bot.on('chunkColumnUnload', (pos) => { if (pos) loaded.delete(`${Math.floor(pos.x / 16)},${Math.floor(pos.z / 16)}`); });
   return {
     has(w, cx, cz) {
       sync(w);

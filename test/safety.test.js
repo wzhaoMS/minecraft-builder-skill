@@ -472,6 +472,32 @@ test('generator style presets fill unset params; explicit params win', () => {
   assert.throws(() => runGenerator('house', { style: 'gothic' }), /style/);
 });
 
+test('chunk readiness: only real chunk data in the current dimension counts', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { trackChunks } = await import('../src/transport/bot.js');
+  const bot = new EventEmitter();
+  bot._client = new EventEmitter();
+  bot.world = {}; // mineflayer reuses one World object across dimensions
+  bot.game = { dimension: 'overworld' };
+  const t = trackChunks(bot);
+  bot._client.emit('update_light', { chunkX: 1, chunkZ: 1 }); // placeholder column: not data
+  assert.equal(t.has(bot.world, 1, 1), false);
+  bot._client.emit('map_chunk', { x: 1, z: 1 });
+  assert.equal(t.has(bot.world, 1, 1), true);
+  // to the Nether: mineflayer unloads the columns internally (world events), dimension changes
+  bot.game.dimension = 'the_nether';
+  bot.emit('chunkColumnUnload', { x: 16, z: 16 });
+  assert.equal(t.has(bot.world, 1, 1), false);
+  bot._client.emit('map_chunk', { x: 1, z: 1 });
+  assert.equal(t.has(bot.world, 1, 1), true);
+  // back to the overworld before any overworld chunk arrived
+  bot.game.dimension = 'overworld';
+  assert.equal(t.has(bot.world, 1, 1), false);
+  bot._client.emit('map_chunk', { x: 1, z: 1 });
+  bot._client.emit('unload_chunk', { chunkX: 1, chunkZ: 1 });
+  assert.equal(t.has(bot.world, 1, 1), false);
+});
+
 // ───────────────────────────── MCP ─────────────────────────────
 
 test('MCP: malformed JSON-RPC envelopes are rejected', () => {
