@@ -11,7 +11,7 @@ function chatMsg(json, text) {
 }
 
 /** A fake server+bot: executes "commands" in order and replies like Paper 1.21.11 does. */
-function fakeBot({ unloadedOnce = new Set(), log = [] } = {}) {
+function fakeBot({ unloadedOnce = new Set(), log = [], dropBarriers = 0 } = {}) {
   const bot = new EventEmitter();
   bot._client = new EventEmitter();
   bot.version = '1.21.11';
@@ -29,6 +29,7 @@ function fakeBot({ unloadedOnce = new Set(), log = [] } = {}) {
     log.push(raw);
     const c = raw.replace(/^\/execute in \S+ run /, '/'); // gamerules are addressed to a world
     const sync = /^\/tellraw @s "(mcb:sync:[a-z0-9]+:\d+)"$/.exec(c);
+    if (sync && dropBarriers > 0) { dropBarriers--; return undefined; } // lost on the way
     if (sync) return reply(chatMsg({ text: sync[1] }, sync[1]));
     if (c.includes('BAD')) return reply(chatMsg({ color: 'red', extra: [{ translate: 'argument.block.id.invalid', with: ['minecraft:BAD'] }, { click_event: { action: 'suggest_command', command: c } }], text: '' }, 'Unknown block type'));
     if (unloadedOnce.has(c)) { unloadedOnce.delete(c); return reply(chatMsg({ color: 'red', extra: [{ translate: 'argument.pos.unloaded' }], text: '' }, 'That position is not loaded')); }
@@ -109,6 +110,20 @@ test('withGamerules sets and restores values (in an explicitly named world)', as
     assert.ok(log.includes('/execute in minecraft:overworld run gamerule log_admin_commands false'), log.join('\n'));
   });
   assert.equal(log.filter((c) => /gamerule log_admin_commands \w+$/.test(c)).pop(), '/execute in minecraft:overworld run gamerule log_admin_commands true');
+});
+
+test('a teleport whose acknowledgement gets lost is sent again (it is idempotent); so is a lone barrier', async () => {
+  const log = [];
+  const t = new BotTransport(fakeBot({ log, dropBarriers: 1 }), { log: () => {}, opLevel: { value: 4 }, maxRate: 100000, teleportAckMs: 200 });
+  await t.teleport(10.5, 100, 20.5, { waitChunks: false });
+  assert.equal(log.filter((c) => c.includes('tp @s 10.5 100 20.5')).length, 2, log.join('\n'));
+  assert.equal(t._queue.length, 0);
+  const t2 = new BotTransport(fakeBot({ dropBarriers: 1 }), { log: () => {}, opLevel: { value: 4 }, maxRate: 100000, teleportAckMs: 200 });
+  await t2.syncWorld();
+  const t3 = new BotTransport(fakeBot({ dropBarriers: 2 }), { log: () => {}, opLevel: { value: 4 }, maxRate: 100000, teleportAckMs: 200 });
+  const t0 = Date.now();
+  await assert.rejects(() => t3.command('fill 0 0 0 1 1 1 stone', { timeoutMs: 300 }), (e) => e.code === 'ACK_TIMEOUT');
+  assert.ok(Date.now() - t0 < 2000, 'other commands are not resent');
 });
 
 test('rate limiter caps commands per second', async () => {

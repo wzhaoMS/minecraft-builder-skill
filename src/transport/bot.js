@@ -458,7 +458,16 @@ export class BotTransport {
   /** Teleport the bot (flying, creative) and wait for the surrounding chunks to arrive. */
   async teleport(x, y, z, { waitChunks = true, area = null } = {}) {
     const tp = `tp @s ${x} ${y} ${z}`;
-    await this.command(this.dimension ? `execute in ${this.dimension} run ${tp}` : tp, { allowErrors: true });
+    const cmd = this.dimension ? `execute in ${this.dimension} run ${tp}` : tp;
+    try {
+      await this.command(cmd, { allowErrors: true, timeoutMs: this.cfg.teleportAckMs ?? 8000 });
+    } catch (e) {
+      if (e.code !== 'ACK_TIMEOUT' || this.closed) throw e;
+      // Seen on a slow CI server right after a bot logged in inside another dimension: the
+      // teleport ran but the acknowledgement after it never arrived. Teleporting is idempotent.
+      this.log?.('teleport was not acknowledged — sending it again');
+      await this.command(cmd, { allowErrors: true, timeoutMs: 15_000 });
+    }
     try { this.bot.creative?.startFlying(); } catch { /* ignore */ }
     if (waitChunks) await this.waitForArea(area ?? { x1: x - 16, z1: z - 16, x2: x + 16, z2: z + 16 });
   }
@@ -486,8 +495,15 @@ export class BotTransport {
    * give it two more ticks.
    */
   async syncWorld() {
-    const { ack } = await this._sendAcked([], 15_000);
-    await ack;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { ack } = await this._sendAcked([], attempt ? 15_000 : (this.cfg.teleportAckMs ?? 8000));
+        await ack;
+        break;
+      } catch (e) {
+        if (e.code !== 'ACK_TIMEOUT' || this.closed || attempt) throw e; // a lone barrier is safe to resend
+      }
+    }
     await sleep(120);
   }
 
