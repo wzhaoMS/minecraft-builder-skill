@@ -1,0 +1,128 @@
+{
+  "name": "cottage",
+  "description": "Cozy 9x7 oak cottage: cobblestone footing, log corners, gable dark-oak roof, door + torches on the south (front) side, chimney with campfire smoke, bed/chest/crafting table inside. Hand-drawn with ASCII layers.",
+  "palette": {
+    ".": null,
+    "_": "air",
+    "C": "cobblestone",
+    "S": "spruce_planks",
+    "L": "oak_log",
+    "P": "oak_planks",
+    "G": "glass_pane",
+    "D": "oak_door[facing=south,half=lower,hinge=left]",
+    "d": "oak_door[facing=south,half=upper,hinge=left]",
+    "T": "wall_torch[facing=south]",
+    "n": "dark_oak_stairs[facing=south]",
+    "s": "dark_oak_stairs[facing=north]",
+    "R": "dark_oak_slab[type=bottom]",
+    "B": "red_bed[facing=north,part=foot]",
+    "b": "red_bed[facing=north,part=head]",
+    "H": "chest[facing=south]",
+    "K": "crafting_table",
+    "F": "campfire[lit=true]"
+  },
+  "layers": [
+    [
+      "...........",
+      ".CCCCCCCCC.",
+      ".CSSSSSSSC.",
+      ".CSSSSSSSC.",
+      ".CSSSSSSSC.",
+      ".CSSSSSSSC.",
+      ".CSSSSSSSC.",
+      ".CCCCCCCCC.",
+      "..........."
+    ],
+    [
+      "...........",
+      ".LPPPPPPPL.",
+      ".P_____HKP.",
+      ".P_______P.",
+      ".Pb______P.",
+      ".PB______P.",
+      ".P_______P.",
+      ".LPPPDPPPL.",
+      "..........."
+    ],
+    [
+      "...........",
+      ".LPGGPGGPL.",
+      ".P_______P.",
+      ".G_______G.",
+      ".G_______G.",
+      ".G_______G.",
+      ".P_______P.",
+      ".LGGPdPGGL.",
+      "....T.T...."
+    ],
+    [
+      "...........",
+      ".LPPPPPPPL.",
+      ".P_______P.",
+      ".P_______P.",
+      ".P_______P.",
+      ".P_______P.",
+      ".P_______P.",
+      ".LPPPPPPPL.",
+      "..........."
+    ],
+    [
+      "nnnnnnnnnnn",
+      ".LPPPPPPPL.",
+      ".P_______P.",
+      ".P_______P.",
+      ".P_______P.",
+      ".P_______P.",
+      ".P_______P.",
+      ".LPPPPPPPL.",
+      "sssssssssss"
+    ],
+    [
+      "...........",
+      "nnnnnnnnnnn",
+      ".P_______P.",
+      ".P_______P.",
+      ".P_______P.",
+      ".P_______P.",
+      ".P_______P.",
+      "sssssssssss",
+      "..........."
+    ],
+    [
+      "...........",
+      "...........",
+      "nnnnnnnnnnn",
+      ".P_______P.",
+      ".P_______P.",
+      ".P_______P.",
+      "sssssssssss",
+      "...........",
+      "..........."
+    ],
+    [
+      "...........",
+      "...........",
+      "...........",
+      "nnnnnnnnnnn",
+      ".P_______P.",
+      "sssssssssss",
+      "...........",
+      "...........",
+      "..........."
+    ],
+    [
+      "...........",
+      "...........",
+      "...........",
+      "...........",
+      "RRRRRRRRRRR",
+      "...........",
+      "...........",
+      "...........",
+      "..........."
+    ]
+  ],
+  "blocks": [
+    [8, 5, 3, "C"], [8, 6, 3, "C"], [8, 7, 3, "C"], [8, 8, 3, "C"], [8, 9, 3, "C"], [8, 10, 3, "F"]
+  ]
+}

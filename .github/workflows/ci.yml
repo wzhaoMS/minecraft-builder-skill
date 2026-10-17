@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          node bin/mcb.js --help
+          node bin/mcb.js generators
+          node bin/mcb.js validate examples/blueprints/cottage.json
+          node bin/mcb.js info gen:castle --json > /dev/null
+          node bin/mcb.js preview examples/blueprints/cottage.json -o cottage.png
+          node bin/mcb.js build examples/blueprints/cottage.json --dry-run --at 0,64,0 > /dev/null
+          node bin/mcb.js export gen:house -o house.schem
+          node bin/mcb.js export gen:house --datapack out --name house
+
+  e2e:
+    name: e2e against a real Paper server
+    runs-on: ubuntu-latest
+    needs: unit
+    env:
+      MC_VERSION: '1.21.11'
+      MCB_PORT: '25566'
+      MCB_RCON_PORT: '25575'
+      MCB_RCON_PASSWORD: ci-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - name: Cache Paper server jar
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mc-server/paper.jar
+          key: paper-${{ env.MC_VERSION }}-v1
+      - name: Set up and start a throw-away Paper server
+        # Accepting the Minecraft EULA here is for an ephemeral CI test server only.
+        run: |
+          node bin/mcb.js server setup --dir "$RUNNER_TEMP/mc-server" --mc-version "$MC_VERSION" --port "$MCB_PORT" --rcon-password "$MCB_RCON_PASSWORD" --accept-eula --config-out "$RUNNER_TEMP/mcb.config.json"
+          node bin/mcb.js server start --dir "$RUNNER_TEMP/mc-server" --memory 2G
+          node bin/mcb.js doctor
+      - name: End-to-end tests
+        env:
+          MCB_E2E: '1'
+          MCB_SERVER_DIR: ${{ runner.temp }}/mc-server
+        run: npm run test:e2e
+      - name: Build examples on the server
+        run: |
+          node bin/mcb.js build examples/blueprints/cottage.json --at 2000,-60,2000 --verify --json > report.json
+          node -e "const r=require('./report.json'); if(!r.ok) { console.error(JSON.stringify(r,null,2)); process.exit(1) }"
+          node bin/mcb.js build gen:castle --at 2050,-60,2000 --verify
+          node bin/mcb.js undo
+      - name: Server log
+        if: always()
+        run: node bin/mcb.js server logs --dir "$RUNNER_TEMP/mc-server" --lines 200
+      - name: Stop server
+        if: always()
+        run: node bin/mcb.js server stop --dir "$RUNNER_TEMP/mc-server"

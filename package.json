@@ -1,20 +1,51 @@
 {
-  "name": "mc-builder",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
+  "name": "minecraft-builder-skill",
+  "version": "2.0.0",
+  "description": "AI-agent skill + CLI (mcb) to design, preview, build, verify and undo structures in Minecraft Java Edition via a mineflayer bot or RCON.",
+  "private": true,
+  "type": "module",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wzhaoMS/minecraft-builder-skill.git"
+  },
+  "keywords": [
+    "minecraft",
+    "mineflayer",
+    "ai-agent",
+    "skill",
+    "builder",
+    "schematic",
+    "paper",
+    "rcon",
+    "datapack"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "mcb": "bin/mcb.js"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "mcb": "node bin/mcb.js",
+    "test": "node --test --test-force-exit \"test/*.test.js\"",
+    "test:e2e": "node --test --test-force-exit --test-concurrency=1 \"test/e2e/*.test.js\"",
+    "test:all": "node --test --test-force-exit --test-concurrency=1 \"test/**/*.test.js\""
+  },
   "dependencies": {
-    "canvas": "^3.2.3",
-    "mineflayer": "^4.35.0",
-    "mineflayer-pathfinder": "^2.4.5",
-    "prismarine-schematic": "^1.2.3",
-    "prismarine-viewer": "^1.33.0",
-    "puppeteer": "^24.43.1"
+    "jpeg-js": "^0.4.4",
+    "minecraft-data": "^3.117.0",
+    "minecraft-protocol": "^1.68.0",
+    "mineflayer": "^4.39.0",
+    "pngjs": "^7.0.0",
+    "prismarine-block": "^1.23.0",
+    "prismarine-item": "^1.18.0",
+    "prismarine-nbt": "^2.8.0",
+    "prismarine-schematic": "^1.3.0",
+    "vec3": "^0.1.10"
   }
 }
