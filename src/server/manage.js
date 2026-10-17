@@ -143,6 +143,14 @@ export async function setupServer(o) {
   }
   writeProperties(propsFile, updates);
   Object.assign(summary, { port, rconPort, rconPassword, onlineMode: updates['online-mode'] === 'true', world: fresh ? (o.world ?? 'flat') : 'existing' });
+  // another server already answering on this port would make `server start` fail later: say so now
+  if (!serverProcess(dir)) {
+    const busy = await pingServer('127.0.0.1', port, 1500);
+    if (busy) {
+      summary.warnings = [...(summary.warnings ?? []), `port ${port} is already used by a running server (${busy.version ?? 'unknown'}); pick another --port before \`mcb server start\``];
+      log(`warning: ${summary.warnings.at(-1)}`);
+    }
+  }
 
   // ops.json (offline UUIDs) — works before first start; `mcb server op` handles running servers.
   const opsFile = path.join(dir, 'ops.json');
