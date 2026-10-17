@@ -182,7 +182,7 @@ Full spec: [docs/blueprint-format.md](docs/blueprint-format.md).
 | `skyscraper` | modern towers | `style=glass\|setback\|cylinder width=16 depth=16 height=96 body glass accent spire` |
 | `city` | whole districts | `width=160 depth=160 blockSize=22 streetWidth=5 maxHeight=90 parks=0.15 highway` |
 | `tree` | landscaping | `type=oak\|birch\|spruce\|jungle\|acacia\|dark_oak\|cherry\|pale_oak\|mangrove\|azalea height=0 (auto)` |
-| `road` / `bridge` | infrastructure | road: `length=32 width=7 axis=x\|z lamps=12`; bridge: `length=24 style=arch\|beam\|suspension` |
+| `road` / `bridge` | infrastructure | road: `length=32 width=7 axis=x\|z lamps=12`; bridge: `length=24 style=arch\|beam\|suspension clearance` (deck at y=0, arches/piers go `clearance` blocks below — span a river or gap; on a superflat world raise `--at` y) |
 | `fountain` / `arch` / `wall` | plazas, gates, walls | `radius=4`; `width=9 height=8`; `width=10 height=5 crenellations` |
 | `lighthouse` `windmill` `obelisk` `lamppost` `bench` | landmarks, street furniture | see `mcb generators <name>` |
 | `text` | signs, logos, labels | `text=HELLO block=gold_block font=5x7\|3x5 scale=1 facing=south plane=vertical\|flat background` |

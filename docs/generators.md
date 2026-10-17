@@ -59,7 +59,7 @@ mcb preview gen:box -o box.png
 
 ## `bridge`
 
-Bridge along X: stone arch, beam with piers, or suspension with towers and cables; railings and lanterns
+Bridge along X: stone arch, beam with piers, or suspension with towers and cables; railings and lanterns. The deck is at y=0 (bank level) and the structure reaches `clearance` blocks below it — place it across a river or gap
 
 | Param | Type | Default | Notes |
 |---|---|---|---|

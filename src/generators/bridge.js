@@ -3,7 +3,7 @@ import { materialFamily, stairs, slab, finish } from './helpers.js';
 /** Bridge spanning along X; its deck ends meet the ground at y = 0 (stairs ramp onto the deck). */
 export default {
   name: 'bridge',
-  description: 'Bridge along X: stone arch, beam with piers, or suspension with towers and cables; railings and lanterns',
+  description: 'Bridge along X: stone arch, beam with piers, or suspension with towers and cables; railings and lanterns. The deck is at y=0 (bank level) and the structure reaches `clearance` blocks below it — place it across a river or gap',
   params: {
     length: { type: 'int', default: 24, min: 6, max: 256, description: 'span along X' },
     width: { type: 'int', default: 5, min: 3, max: 24, description: 'deck width incl. railings' },

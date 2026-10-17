@@ -81,35 +81,54 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
           return;
         }
       }
-      restore.set(x, y, z, before);
+      // grass/paths go back in the last pass, after everything above them is gone: put back under a
+      // block that is about to be removed, grass can still decay into dirt in the meantime
+      (DECAYS_UNDER_COVER.has(blockName(before)) ? ground : restore).set(x, y, z, before);
     });
     // grass/paths the build covered turned into dirt: put the original ground back where the undo
-    // uncovers it (a second pass, once the blocks above are gone). Only cells the build itself
-    // covered count — dirt anywhere else is somebody else's doing.
-    if (current && data.meta?.groundLayer) {
-      const [x1, gy, z1, x2, , z2] = data.box;
-      for (let x = x1; x <= x2; x++) {
-        for (let z = z1; z <= z2; z++) {
-          if (data.after.get(x, gy, z) != null) continue;
-          const ownedAbove = [data.after.get(x, gy + 1, z), ...alts.map((s) => s.get(x, gy + 1, z))].filter((b) => b != null);
-          if (!ownedAbove.some((b) => !isAir(b))) continue;
-          const before = data.structure.get(x, gy, z);
-          if (!before || !DECAYS_UNDER_COVER.has(blockName(before))) continue;
-          const now = current.get(x, gy, z);
-          if (now == null) { unreadable++; continue; }
-          if (blockName(now) !== 'dirt') continue;
-          const above = restore.get(x, gy + 1, z) ?? current.get(x, gy + 1, z);
-          // only when the cell is known to end up uncovered (unreadable cover ≠ no cover)
-          if (above != null && isAir(above)) ground.set(x, gy, z, before);
-        }
-      }
+    // uncovers it (a second pass, once the blocks above are gone). Any layer counts — a build with
+    // foundations covers grass inside its own box — but only cells the build itself covered:
+    // dirt anywhere else is somebody else's doing.
+    if (current) {
+      data.structure.forEach((x, y, z, before) => {
+        if (!DECAYS_UNDER_COVER.has(blockName(before))) return;
+        // the build's own changed blocks are handled above; blocks it left as they were (it placed
+        // grass on grass) can still have decayed under its other blocks
+        const ownedHere = [data.after.get(x, y, z), ...alts.map((s) => s.get(x, y, z))].filter((b) => b != null);
+        if (ownedHere.some((b) => !blockMatches(b, before, { strict: true }))) return;
+        const ownedAbove = [data.after.get(x, y + 1, z), ...alts.map((s) => s.get(x, y + 1, z))].filter((b) => b != null);
+        if (!ownedAbove.some((b) => !isAir(b))) return;
+        const now = current.get(x, y, z);
+        if (now == null) { unreadable++; return; }
+        // still grass (it may decay while the undo runs) or already dirt: anything else is a player's edit
+        if (blockName(now) !== 'dirt' && !blockMatches(before, now, { strict: true })) return;
+        const above = restore.get(x, y + 1, z) ?? current.get(x, y + 1, z);
+        // only when the cell is known to end up uncovered (unreadable cover ≠ no cover)
+        if (above != null && isAir(above)) ground.set(x, y, z, before);
+      });
     }
   }
-  const run = (structure) => executeBuild({
-    structure, transport, at: [0, 0, 0], anchor: 'origin', strict: true, undo: false, force: true,
+  const run = (structure, { strict = true } = {}) => executeBuild({
+    structure, transport, at: [0, 0, 0], anchor: 'origin', strict, undo: false, force: true,
     fixMultiblocks: false, dimension, log, onProgress, stateDir,
   });
+  // Liquids go first: removing a basin's walls before its water would let the water run out into
+  // the surroundings (where it is not the build's to clean up).
+  const liquid = new Structure({ name: `${restore.name} (liquids)` });
+  restore.forEach((x, y, z, b) => {
+    const placed = [data.after?.get(x, y, z), ...(data.afterAlt ?? []).map((s) => s.get(x, y, z))];
+    if (placed.some((p) => p != null && isLiquidLike(p))) liquid.set(x, y, z, b);
+  });
   let build = null, groundBuild = null;
+  if (liquid.count) {
+    // with block updates (not strict): removing a source must tell the water it fed to drain away,
+    // otherwise orphaned falling/flowing water stays forever
+    await run(liquid, { strict: false });
+    // let the flowing water/lava the sources fed drain away before their basin is taken down
+    let lava = false;
+    liquid.forEach((x, y, z) => { if (blockName(data.after?.get(x, y, z) ?? '') === 'lava') lava = true; });
+    await new Promise((r) => setTimeout(r, lava ? 6000 : 2500));
+  }
   if (restore.count) build = await run(restore);
   if (ground.count) groundBuild = await run(ground);
   // the restore runs are not undoable builds of their own; don't confuse readers with their undo status
@@ -128,6 +147,12 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
     build,
     ...(groundBuild ? { ground: { restored: ground.count, ok: groundBuild.ok } } : {}),
   };
+}
+
+/** Water/lava (incl. bubble columns and waterlogged blocks): states that can run out when their container goes. */
+function isLiquidLike(block) {
+  const n = blockName(block);
+  return n === 'water' || n === 'lava' || n === 'bubble_column' || /waterlogged=true/.test(String(block));
 }
 
 /** Move an applied snapshot out of the way so the next `undo` targets the previous build. */
