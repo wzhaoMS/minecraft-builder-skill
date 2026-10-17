@@ -74,9 +74,13 @@ All sections are optional and are applied **in this order** (later ones overwrit
   // 1. start from a generator
   "generator": "tower", "params": { "radius": 4, "height": 14 },
 
-  // 2. compose other blueprints / generators (rotate and mirror apply to block states too)
+  // 2. compose other blueprints / generators. "at" is where the part's north-west corner lands
+  //    AFTER it is turned; "facing" turns its front (built facing south) toward north/east/south/
+  //    west; "rotate" is the same in clockwise degrees seen from above (90 = west, 180 = north,
+  //    270 = east); "mirror": "x"|"z". Block states (stairs, doors, logs…) turn with the part.
   "parts": [
-    { "generator": "tree", "params": { "type": "oak" }, "at": [12, 0, 3] },
+    { "generator": "tree", "params": { "type": "oak", "seed": 3 }, "at": [12, 0, 3] },
+    { "generator": "house", "params": { "style": "medieval" }, "at": [0, 0, 14], "facing": "east" },
     { "file": "door-frame.json", "at": [3, 0, 8], "rotate": 90 },
     { "layers": [["SS"]], "at": [0, 5, 0] }
   ],
@@ -134,12 +138,15 @@ export default {
     // ctx: { rng (seeded), gen(name, params) → Structure, Structure }
     s.fill(0, 0, 0, 4, p.height, 4, 'stone_bricks', { mode: 'hollow' });
     s.fill(-1, p.height + 1, -1, 5, p.height + 1, 5, p.wood);
-    s.paste(ctx.gen('tree', { type: 'birch' }), 8, 0, 2);
+    s.place(ctx.gen('tree', { type: 'birch' }), 8, 0, 2);
   },
 };
 ```
 
 or simply `export default function build(s, params, ctx) { … }`.
+
+Generated parts come with extras (eaves, porches, foundations below y = 0): get their exact size
+with `mcb info gen:<name> -p …` or `ctx.gen(...).bounds()` before laying several out side by side.
 
 ### Structure API
 
@@ -151,7 +158,8 @@ or simply `export default function build(s, params, ctx) { … }`.
 | `s.line(x1, y1, z1, x2, y2, z2, block)` | 3-D line |
 | `s.sphere(cx, cy, cz, r, block, { hollow, thickness, half: 'top'\|'bottom', ry, rz })` | ellipsoids via ry/rz |
 | `s.cylinder(cx, y, cz, r, height, block, { hollow, thickness, rz, taper })` | vertical; `taper` < 0 narrows upward |
-| `s.paste(other, dx, dy, dz, { rotate, mirror, skipAir, keep })` | compose structures |
+| `s.place(other, x, y, z, { facing, rotate, mirror, skipAir, keep })` | compose like JSON `parts`: north-west corner at x,y,z after turning |
+| `s.paste(other, dx, dy, dz, { rotate, mirror, skipAir, keep })` | low-level: offsets every block; rotation is around (0,0,0), so a turned part can move into negative x/z |
 | `s.replace(from, to)`, `s.mapBlocks(fn)` | material swaps, e.g. `b => b.replace('oak_', 'spruce_')` |
 | `s.transformed({ rotate: 90, mirror: 'x' })`, `s.translated(dx, dy, dz)`, `s.normalized()` | return new structures |
 | `s.bounds()`, `s.count`, `s.blockCounts()`, `s.forEach((x, y, z, block) => …)` | inspection |

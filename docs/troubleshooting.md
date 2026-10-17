@@ -7,7 +7,7 @@ RCON, the bot's connection and its operator status, and prints a fix for each pr
 
 | Error / symptom | Cause | Fix |
 |---|---|---|
-| `ECONNREFUSED` | Nothing listening on host:port | Start the server (`mcb server start`), check `--host/--port` / `mcb.config.json`. |
+| `ECONNREFUSED` / `doctor`: "nothing answering" | Nothing listening on host:port | `doctor` prints the host:port it tried and where they came from (flag / env / config / default). Running your own server elsewhere? Pass `--host/--port` (or put them in `mcb.config.json`) — don't create a second server. Local server: `mcb server start`. |
 | `Timed out connecting` | Firewall, wrong port, server still starting | `mcb server status`; wait for "Done" in `mcb server logs`. |
 | `Kicked while joining: … whitelist` | Whitelist enabled | Console: `whitelist add BuilderBot`. |
 | `Kicked … Failed to verify username` / online-mode | The server authenticates with Mojang | Use `--auth microsoft` (bot needs its own Minecraft account) or `--transport rcon`, or set `online-mode=false` for a private build server. |
@@ -34,20 +34,34 @@ RCON, the bot's connection and its operator status, and prints a fix for each pr
 
 ## Undo / verify / safety
 
-* `mcb undo` restores what the most recent build changed (`mcb undo --list`, `mcb undo <id>`).
-  Blocks that were edited after the build are **left alone and listed** (`--force` restores them
-  too). Snapshots live in `.mcb/undo/` next to `mcb.config.json` (or the current directory).
+* `mcb undo <id>` restores what that build changed — use the id (or the full `undo:` command,
+  which includes `--config`) printed by the build; plain `mcb undo` takes the newest snapshot in
+  the current store. Blocks edited after the build are **left alone and listed** (`--force`
+  restores them too); blocks that can't be read are skipped and reported, and the snapshot is kept
+  until an undo completes, so you can simply run it again.
+* Snapshots live in `.mcb/undo/` next to `mcb.config.json` (or the current directory) — a
+  different `--config` or working directory means a different store (`mcb undo --list`). A
+  snapshot remembers its server: undoing it while connected elsewhere fails with
+  `SERVER_MISMATCH` (`--any-server` if it is really the same world). You can also pass the
+  snapshot file: `mcb undo .mcb/undo/<id>.json.gz`.
+* A re-run that changes nothing saves no snapshot; snapshots only record blocks the build
+  actually changed.
 * Undo needs the **bot** transport (RCON can't read blocks); RCON builds report
   `undo.available: false`. With RCON, `mcb undo --force` restores without checking for later edits.
 * Snapshots store block states only — entities, dropped items and container contents are not
   saved. That's why builds refuse to overwrite chests, barrels, signs, lecterns, shulker boxes…
-  (`CONTAINERS_AT_RISK`) unless you pass `--force`.
+  (`CONTAINERS_AT_RISK`) unless you pass `--force` — including identical ones a `/fill` would
+  rewrite, and with `--no-undo`.
 * Nothing is changed when the snapshot can't be taken completely (`SNAPSHOT_TOO_LARGE`,
   `SNAPSHOT_INCOMPLETE`); split the build or use `--no-undo` deliberately.
 * `--verify` compares every block (ignoring properties the game recomputes, like fence connections
-  or leaf distance) and repairs mismatches with one `/setblock` pass. The report separates
-  `matched`, `mismatches`, `remaining` and `unreadable` (chunk not available — never counted as OK).
+  or leaf distance, and natural decay like grass → dirt) and repairs mismatches with one
+  `/setblock` pass. The report separates `matched`, `mismatches`, `remaining` and `unreadable`
+  (chunk not available — never counted as OK). It checks against your blueprint; to see what is
+  really there, `mcb snapshot --from … --to … --render live.png`.
 * `mcb plan` shows the impact (blocks replaced by type, containers at risk) without changing anything.
+* If a build is killed, `send_command_feedback` may stay off until the next `mcb` build or
+  `mcb doctor` restores it (both do it automatically from the journal in `.mcb/`).
 
 ## Local server
 
@@ -55,7 +69,9 @@ RCON, the bot's connection and its operator status, and prints a fix for each pr
 |---|---|
 | `Paper has no version "x"` | Use a version from the list printed in the error. |
 | `Java 21+ not found` | `winget install EclipseAdoptium.Temurin.21.JRE` / `brew install openjdk@21` / `sudo apt install openjdk-21-jre-headless`, or `mcb server setup --install-java`. Minecraft 26.x needs Java 25. |
-| Server exits right away | `mcb server logs`; usual causes: EULA not accepted, port in use (`--port 25566`), not enough memory (`mcb server start --memory 4G`). |
+| `Server exits right away` | `mcb server logs`; usual causes: EULA not accepted, port in use (`--port 25566`), not enough memory (`mcb server start --memory 4G`). |
+| `PORT_IN_USE` on `server start` | Another server already answers on that port — build on it (`mcb doctor --port <port>`), stop it, or change `server-port`. |
+| Windows PowerShell 5: `ConvertFrom-Json` fails on an exported blueprint | Palette keys that differ only by case (`A`/`a`) are valid JSON but PS 5 rejects them — use `ConvertFrom-Json -AsHashtable` (PS 7) or Node to read it. `Set-Content -Encoding utf8` adds a BOM on PS 5; `mcb` accepts BOM'd files. |
 | Old `setup.sh` server (`../mc-server`) | `mcb server setup --dir ../mc-server --accept-eula` upgrades it in place and keeps its port/world. |
 
 Set `MCB_DEBUG=1` to print stack traces.

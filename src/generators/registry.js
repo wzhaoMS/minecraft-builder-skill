@@ -75,7 +75,11 @@ function coerce(name, spec, value) {
   }
 }
 
-/** Fill in defaults, coerce CLI strings, validate ranges. Unknown params are an error (typo guard). */
+/**
+ * Fill in defaults, coerce CLI strings, validate ranges. Unknown params are an error (typo guard).
+ * Generators with `presets` take a `style` param: the preset's values apply to every param the
+ * caller did not set explicitly.
+ */
 export function resolveParams(gen, params = {}) {
   const out = {};
   const specs = gen.params || {};
@@ -84,7 +88,10 @@ export function resolveParams(gen, params = {}) {
       throw new Error(`Generator "${gen.name}" has no param "${k}". Valid: ${Object.keys(specs).join(', ') || '(none)'}`);
     }
   }
-  for (const [k, spec] of Object.entries(specs)) out[k] = coerce(k, spec, params[k]);
+  const style = params.style ?? specs.style?.default;
+  const preset = gen.presets && style != null ? gen.presets[String(style).toLowerCase()] : null;
+  const given = preset ? { ...preset, ...Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')) } : params;
+  for (const [k, spec] of Object.entries(specs)) out[k] = coerce(k, spec, given[k]);
   // a generator may declare its own default seed (as a 'seed' param); otherwise 1. A numeric
   // string ("-p seed=2" on the CLI) is the same seed as the number 2 in JSON / JS.
   if (!('seed' in specs)) {

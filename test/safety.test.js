@@ -122,6 +122,21 @@ test('undo refuses a snapshot taken on another server unless anyServer', async (
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('undo also puts back grass that turned to dirt under the build', async () => {
+  const dir = tmp();
+  const blocks = {};
+  for (let x = -1; x <= 5; x++) for (let z = -1; z <= 5; z++) blocks[`${x},-1,${z}`] = 'grass_block';
+  const sim = new SimTransport({ blocks });
+  const r = await executeBuild({ structure: hut(), transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet });
+  for (let x = 0; x <= 4; x++) for (let z = 0; z <= 4; z++) sim.world.set(`${x},-1,${z}`, 'dirt'); // the game's decay
+  sim.world.set('5,-1,5', 'dirt'); // outside the build's footprint
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.ok, true);
+  for (let x = 0; x <= 4; x++) for (let z = 0; z <= 4; z++) assert.match(sim.get(x, -1, z), /^grass_block/, `${x},-1,${z}`);
+  assert.equal(sim.get(5, -1, 5), 'dirt', 'outside the build area nothing is touched');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('snapshot ids are unique and never overwrite each other', () => {
   const ids = new Set(Array.from({ length: 200 }, () => newSnapshotId('same name')));
   assert.equal(ids.size, 200);
@@ -290,6 +305,27 @@ test('parts: at = north-west corner after turning; facing west = rotate 90', asy
   west.forEach((x, y, z, b) => { if (b.startsWith('oak_door')) door = b; });
   assert.match(door, /facing=west/);
   await assert.rejects(() => fromJson({ parts: [{ ...part, facing: 'up' }] }), /facing must be/);
+});
+
+test('JSON blueprints and configs written with a UTF-8 BOM (PowerShell 5) load fine', async () => {
+  const dir = tmp();
+  const bp = path.join(dir, 'bom.json');
+  fs.writeFileSync(bp, '\uFEFF' + JSON.stringify({ palette: { X: 'stone' }, layers: [['XX']] }));
+  const { loadBlueprint } = await import('../src/io/blueprint.js');
+  assert.equal((await loadBlueprint(bp)).count, 2);
+  const cf = path.join(dir, 'mcb.config.json');
+  fs.writeFileSync(cf, '\uFEFF' + JSON.stringify({ maxRate: 123 }));
+  assert.equal(resolveConfig({ config: cf }).maxRate, 123);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('generator style presets fill unset params; explicit params win', () => {
+  const med = runGenerator('house', { style: 'medieval' });
+  assert.ok(med.blockCounts().white_terracotta > 0);
+  const own = runGenerator('house', { style: 'medieval', wall: 'bricks' });
+  assert.equal(own.blockCounts().white_terracotta ?? 0, 0);
+  assert.ok(own.blockCounts().bricks > 0);
+  assert.throws(() => runGenerator('house', { style: 'gothic' }), /style/);
 });
 
 // ───────────────────────────── MCP ─────────────────────────────

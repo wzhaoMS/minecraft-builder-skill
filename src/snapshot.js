@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import crypto from 'node:crypto';
 import { Structure } from './core/structure.js';
 import { splitBox } from './compile/plan.js';
 
@@ -133,6 +134,6 @@ export function listSnapshots(stateDir) {
 
 export function newSnapshotId(name = 'build') {
   const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
-  const rand = Math.random().toString(36).slice(2, 6);
+  const rand = crypto.randomBytes(4).readUInt32BE(0).toString(36).padStart(7, '0');
   return `${ts}-${String(name).replace(/[^a-z0-9_-]+/gi, '_').slice(0, 40)}-${rand}`;
 }

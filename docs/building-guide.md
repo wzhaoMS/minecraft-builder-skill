@@ -58,7 +58,8 @@ cracked + mossy; cobblestone + andesite) — in a JS blueprint, `ctx.rng.chance(
 
 * Lanterns/torches every 5–7 blocks inside and around the build (stops mobs spawning).
 * Hidden light: glowstone/sea lantern/shroomlight under carpet or behind leaves.
-* Hanging lanterns (`lantern[hanging=true]`) need a block above; chains look great with them.
+* Hanging lanterns (`lantern[hanging=true]`) need a block above; chains (`iron_chain` since
+  1.21.9, `chain` before — `mcb` translates either name for your server) look great with them.
 
 ## Landscaping & context
 

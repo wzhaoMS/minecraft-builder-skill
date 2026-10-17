@@ -20,15 +20,25 @@ build → verify → undo loop. Tested end-to-end against Paper 1.21.11 (locally
 - Transports: mineflayer bot (acknowledged batches, rate/volume caps, auto-reconnect), RCON
   (forceload management), dry run.
 - Safety: validation before any change, complete undo snapshot or no build, refusal to overwrite
-  containers/signs without `--force`, conflict-aware undo, quiet builds with crash-safe gamerule
-  restore, `plan` impact reports, per-dimension height checks.
+  containers/signs without `--force` (also with `--no-undo`, and for identical containers a
+  `/fill` would rewrite), conflict-aware undo that skips unreadable blocks and keeps the snapshot
+  until it completes, snapshots tied to their server (`SERVER_MISMATCH`, `--any-server`), quiet
+  builds with a crash-safe, per-server gamerule journal applied in the build's dimension, `plan`
+  impact reports, per-dimension height checks.
 - Verification that reads every block back (unreadable ≠ OK) and repairs once.
 - Single-player data pack export (stepped, marker-anchored, self-cleaning forceloads, cancel).
-- MCP server (`mcb mcp`) with inline-image previews.
+- MCP server (`mcb mcp`) with inline-image previews, serialized world-changing tools and strict
+  JSON-RPC envelope checks.
 - Cross-platform local Paper server management (PaperMC Fill API with checksums, optional
-  Temurin JRE install, flat world, RCON, correct offline-UUID ops).
-- Unit tests (233), end-to-end tests against a real server (11), GitHub Actions CI on
-  Windows/macOS/Linux × Node 22/24 plus an e2e job.
+  Temurin JRE install, flat world, RCON, correct offline-UUID ops; refuses a busy port, only ever
+  stops a Java process).
+- `house style=classic|medieval|rustic|modern` palettes; `facing` for JSON `parts` and
+  `Structure.place()` (north-west corner after turning); block renames across versions
+  (`chain` ↔ `iron_chain`, `grass` → `short_grass`) translated automatically.
+- The bot reads player positions and gamerules through `/tellraw`, so servers with
+  `send_command_feedback=false` work.
+- Unit tests (258, incl. an in-memory server for safety regressions), end-to-end tests against a
+  real server (12), GitHub Actions CI on Windows/macOS/Linux × Node 22/24 plus an e2e job.
 
 ### Changed
 - SKILL.md rewritten as an agent-first workflow guide; README, troubleshooting, blueprint format,

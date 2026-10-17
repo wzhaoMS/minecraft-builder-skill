@@ -9,7 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Structure } from './core/structure.js';
 import { decodeSnapshot, captureRegion, listSnapshots } from './snapshot.js';
-import { executeBuild, blockMatches, BuildError, normalizeDimension, DIMENSIONS } from './build.js';
+import { executeBuild, blockMatches, BuildError, normalizeDimension, DIMENSIONS, DECAYS_UNDER_COVER } from './build.js';
+import { blockName } from './core/blockstate.js';
 import { withGamerules } from './gamerules.js';
 import { normalizeServerKey } from './connect.js';
 
@@ -70,6 +71,18 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
       }
       restore.set(x, y, z, before);
     });
+    // grass under the build turned into dirt while covered: put the original ground back
+    if (current && data.meta?.groundLayer) {
+      const [x1, gy, z1, x2, , z2] = data.box;
+      for (let x = x1; x <= x2; x++) {
+        for (let z = z1; z <= z2; z++) {
+          if (data.after.get(x, gy, z) != null) continue;
+          const before = data.structure.get(x, gy, z);
+          const now = current.get(x, gy, z);
+          if (before && now && DECAYS_UNDER_COVER.has(blockName(before)) && blockName(now) === 'dirt') restore.set(x, gy, z, before);
+        }
+      }
+    }
   }
   let build = null;
   if (restore.count) {

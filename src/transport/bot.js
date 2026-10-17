@@ -42,6 +42,21 @@ export async function connectBot(cfg = {}) {
 
 /** Create a mineflayer bot and wait until it has spawned (with actionable errors). */
 async function spawnBot(cfg) {
+  // Paper throttles reconnects from one address (connection-throttle, 4 s) and a stale session of
+  // the same name can bounce the first attempt: wait and retry those instead of giving up.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await spawnBotOnce(cfg);
+    } catch (e) {
+      if (e.code !== 'KICKED' || !e.transient || attempt >= 2) throw e;
+      const wait = attempt === 0 ? 2500 : 5000;
+      (cfg.log ?? (() => {}))(`join refused (${e.message.replace(/^Kicked while joining: /, '')}) — retrying in ${wait / 1000} s`);
+      await sleep(wait);
+    }
+  }
+}
+
+async function spawnBotOnce(cfg) {
   const mineflayer = require('mineflayer');
   const log = cfg.log ?? (() => {});
   const opts = {
@@ -75,12 +90,14 @@ async function spawnBot(cfg) {
     };
     const onSpawn = () => done();
     const onKick = (reason) => {
-      const text = kickText(reason);
+      const text = kickText(reason) || 'no reason given';
       let hint = '';
       if (/whitelist/i.test(text)) hint = `Whitelist the bot: run \`whitelist add ${opts.username}\` in the server console.`;
       else if (/outdated|incompatible|version/i.test(text)) hint = 'Version mismatch — omit --version to auto-detect, or use a server version mineflayer supports.';
       else if (/authenticat|premium|online/i.test(text)) hint = 'Server is in online-mode: use --auth microsoft or set online-mode=false for a local build server.';
-      done(new TransportError(`Kicked while joining: ${text}`, { code: 'KICKED', hint }));
+      else if (/banned/i.test(text)) hint = `The bot is banned: run \`pardon ${opts.username}\` in the server console.`;
+      const transient = /throttl|wait before|duplicate_login|logged in from another location|no reason given/i.test(text);
+      done(Object.assign(new TransportError(`Kicked while joining: ${text}`, { code: 'KICKED', hint }), { transient }));
     };
     const onError = (err) => {
       const hint = err.code === 'ECONNREFUSED'
@@ -101,7 +118,15 @@ function kickText(reason) {
   if (typeof reason === 'string') {
     try { return flattenText(JSON.parse(reason)); } catch { return reason; }
   }
-  return flattenText(reason);
+  return flattenText(simplifyNbt(reason));
+}
+
+/** prismarine-nbt tagged value ({ type, value }) → plain JS (1.20.3+ sends text components as NBT). */
+function simplifyNbt(v) {
+  if (!v || typeof v !== 'object' || !('type' in v) || !('value' in v)) return v;
+  if (v.type === 'compound') return Object.fromEntries(Object.entries(v.value).map(([k, x]) => [k, simplifyNbt(x)]));
+  if (v.type === 'list') return (v.value?.value ?? []).map((x) => simplifyNbt({ type: v.value.type, value: x }));
+  return v.value;
 }
 
 function flattenText(c) {

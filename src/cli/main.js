@@ -28,7 +28,7 @@ DESIGN
   generators                         List built-in generators and their params
   info <blueprint> [-p k=v]          Size, block counts, command plan, lint warnings
   validate <blueprint>               Check block names/states against Minecraft (exit 1 on errors)
-  preview <blueprint> [-o out.png] [--view sheet|iso|iso-nw|top|south|north|east|west] [--size 1600]
+  preview <blueprint> [-o out.png] [--view sheet|iso|iso-nw|top|south|north|east|west] [--size <max px>]
   export <blueprint> -o <file.schem|.nbt|.json|.mcfunction|.png>   |   --datapack <dir> [--name n] [--at x,y,z]
   generate <generator> [-p k=v]... -o <file>           Run a generator and save the result
 
@@ -366,12 +366,12 @@ async function cmdWatch(flags, out) {
     if (!o.undo || !o.stateDir || !report.changed) return;
     report.changed.forEach((x, y, z, b) => changedSoFar.set(x, y, z, b));
     if (!changedSoFar.count) return;
-    const b = report.affectedBox;
+    const b = report.snapshotBox ?? report.affectedBox;
     unionBox = unionBox ? [Math.min(unionBox[0], b[0]), Math.min(unionBox[1], b[1]), Math.min(unionBox[2], b[2]), Math.max(unionBox[3], b[3]), Math.max(unionBox[4], b[4]), Math.max(unionBox[5], b[5])] : [...b];
     undoId ??= newSnapshotId(`watch-${report.name}`);
     saveSnapshot(o.stateDir, {
       id: undoId, name: report.name, box: unionBox, structure: baseline, after: changedSoFar,
-      meta: { origin: report.origin, facing: report.facing, dimension: report.dimension, server: transport.serverKey ?? null, watch: true },
+      meta: { origin: report.origin, facing: report.facing, dimension: report.dimension, server: transport.serverKey ?? null, watch: true, groundLayer: !!report.snapshotBox },
     }, { overwrite: true });
     if (!undoNoted) { out.print(`undo everything this session built with: mcb undo ${undoId}${configFlag(flags)}`); undoNoted = true; }
   };

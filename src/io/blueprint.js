@@ -78,7 +78,8 @@ export async function loadBlueprint(source, opts = {}) {
   if (ext === '.json') {
     let data;
     try {
-      data = JSON.parse(fs.readFileSync(source, 'utf8'));
+      // tolerate a UTF-8 BOM (Windows PowerShell 5 `Set-Content -Encoding utf8` writes one)
+      data = JSON.parse(fs.readFileSync(source, 'utf8').replace(/^\uFEFF/, ''));
     } catch (e) {
       throw new BlueprintError(`Invalid JSON in ${source}: ${e.message}`);
     }

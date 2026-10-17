@@ -117,7 +117,7 @@ const inBox = (box, x, y, z) => !!box && x >= box[0] && x <= box[3] && y >= box[
 
 // Grass-like blocks turn into dirt as soon as something solid covers them; when the blueprint
 // itself covers them, dirt there is "already built" (re-placing grass would just decay again).
-const DECAYS_UNDER_COVER = new Set(['grass_block', 'mycelium', 'podzol', 'dirt_path', 'farmland']);
+export const DECAYS_UNDER_COVER = new Set(['grass_block', 'mycelium', 'podzol', 'dirt_path', 'farmland']);
 
 /** `want` at x,y,z (target) is satisfied by world block `cur`, allowing for decay under the build's own blocks. */
 function alreadyThere(want, cur, x, y, z, target) {
@@ -261,8 +261,11 @@ export async function executeBuild(o) {
     // 4. read-only phase: snapshot (undo), impact, container guard — nothing has been changed yet
     let snapshot = null;
     const wantUndo = o.undo !== false && !o.planOnly;
+    // the snapshot also keeps the ground layer under the build: grass there turns to dirt while
+    // covered, and undo puts it back
+    const snapBox = [modBox[0], Math.max(dim.minY, modBox[1] - 1), modBox[2], modBox[3], modBox[4], modBox[5]];
     if (transport.canRead) {
-      const volume = (modBox[3] - modBox[0] + 1) * (modBox[4] - modBox[1] + 1) * (modBox[5] - modBox[2] + 1);
+      const volume = (snapBox[3] - snapBox[0] + 1) * (snapBox[4] - snapBox[1] + 1) * (snapBox[5] - snapBox[2] + 1);
       const maxSnap = o.maxSnapshot ?? 32_000_000;
       if (volume > maxSnap) {
         if (wantUndo) {
@@ -274,7 +277,7 @@ export async function executeBuild(o) {
       } else {
         progress({ stage: 'snapshot', done: 0, total: 1 });
         await settle(transport, 300);
-        const cap = await captureRegion(transport, modBox, { onProgress: (d, n) => progress({ stage: 'snapshot', done: d, total: n }) });
+        const cap = await captureRegion(transport, snapBox, { onProgress: (d, n) => progress({ stage: 'snapshot', done: d, total: n }) });
         if (cap.unknown && !o.planOnly && !o.force) {
           throw new BuildError(`Could not read ${cap.unknown} blocks of the build area (chunks not loaded) — nothing was changed`, {
             code: 'SNAPSHOT_INCOMPLETE', hint: 'Retry; check the area is inside the world border. --force builds anyway (no undo for those blocks, no container check there).',
@@ -282,6 +285,7 @@ export async function executeBuild(o) {
         }
         snapshot = cap.structure;
         Object.defineProperty(report, 'snapshot', { value: snapshot, enumerable: false });
+        Object.defineProperty(report, 'snapshotBox', { value: snapBox, enumerable: false });
       }
     } else {
       report.undo = { available: false, reason: `the ${transport.kind} transport cannot read blocks (use the bot transport for undo/verify)` };
@@ -347,11 +351,19 @@ export async function executeBuild(o) {
         if (!changed.count) {
           report.undo = { available: false, reason: 'nothing to undo: the area already matches the blueprint' };
         } else {
-          const id = o.undoId ?? newSnapshotId(structure.name);
-          const file = saveSnapshot(o.stateDir, {
-            id, name: structure.name, box: modBox, structure: snapshot, after: changed,
-            meta: { origin: placement.origin, facing: placement.facing, dimension, server: transport.serverKey ?? null },
-          }, { overwrite: !!o.undoId });
+          let id = o.undoId ?? newSnapshotId(structure.name);
+          const snap = {
+            id, name: structure.name, box: snapBox, structure: snapshot, after: changed,
+            meta: { origin: placement.origin, facing: placement.facing, dimension, server: transport.serverKey ?? null, groundLayer: snapBox[1] < modBox[1] },
+          };
+          let file;
+          try {
+            file = saveSnapshot(o.stateDir, snap, { overwrite: !!o.undoId });
+          } catch (e) {
+            if (e.code !== 'EEXIST' || o.undoId) throw e;
+            snap.id = id = newSnapshotId(structure.name); // practically impossible id clash: never overwrite, pick another
+            file = saveSnapshot(o.stateDir, snap);
+          }
           report.undo = { available: true, id, file };
           log(`undo snapshot saved: ${id}`);
         }

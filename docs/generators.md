@@ -188,8 +188,9 @@ Cozy timber-framed house: gable/hip/flat roof, windows, door on the south, chimn
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `width` | int (5…48) | `8` | outer size along X |
-| `depth` | int (5…48) | `8` | outer size along Z |
+| `style` | enum (classic \| medieval \| rustic \| modern) | `"classic"` | material preset (explicit params override it): classic = red walls; medieval = white walls, dark-oak frame; rustic = spruce cabin; modern = white concrete, flat roof |
+| `width` | int (5…48) | `8` | wall footprint along X (the eaves add `overhang` on each side) |
+| `depth` | int (5…48) | `8` | wall footprint along Z (the eaves add `overhang` on each side) |
 | `height` | int (4…24) | `5` | wall height incl. the foundation course (≥9 → 2 storeys, ≥13 → 3) |
 | `wall` | block | `"red_concrete"` | wall infill (try white_terracotta, spruce_planks, cobblestone, bricks) |
 | `roof` | block | `"dark_oak_planks"` | roof material — its stairs/slabs are used (no stairs → stepped roof) |

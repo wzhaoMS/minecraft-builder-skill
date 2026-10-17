@@ -16,14 +16,14 @@ npm install
 node bin/mcb.js server setup --accept-eula --op YourName   # local Paper 1.21.11 server (optional)
 node bin/mcb.js server start
 node bin/mcb.js build gen:house --near YourName --verify    # a house appears in front of you
-node bin/mcb.js undo                                        # …and is gone again
+node bin/mcb.js undo <id>                                   # …and is gone again (id printed by build)
 ```
 
 ## Why it's useful
 
 | | |
 |---|---|
-| **Design the way agents think** | ASCII-layer JSON blueprints, a small JS DSL (`fill`, `sphere`, `paste`, `transformed`…), 19 parametric generators (house, castle, tower, skyscraper, tree, bridge, road, fountain, city, text, pixel art…), or any `.schem` / `.nbt` / `.litematic`. |
+| **Design the way agents think** | ASCII-layer JSON blueprints, a small JS DSL (`fill`, `sphere`, `place`, `transformed`…), 24 parametric generators (house in classic/medieval/rustic/modern styles, castle, tower, skyscraper, tree, bridge, road, fountain, lighthouse, windmill, city, text, pixel art…), or any `.schem` / `.nbt` / `.litematic`. |
 | **See before you build** | `mcb preview` renders an isometric view, a top view (north up) and front/side elevations into one PNG — agents (and humans) catch mistakes before touching the world. `mcb plan` says exactly where it lands and what it would replace. |
 | **Fast** | Voxels are merged into the fewest `/fill` boxes: a 500-block cottage is ~70 commands, the 445k-block Georgia Tech campus scene builds **and verifies** in about 2 minutes. |
 | **Correct** | Block states rotate with the build, doors/beds get both halves, leaves don't decay, torches/plants are placed after their supports, fluids last. `--verify` reads every block back and repairs mismatches. |
@@ -46,6 +46,17 @@ node bin/mcb.js doctor
 Shortcuts: `./setup.sh` (Linux/macOS) or `powershell -ExecutionPolicy Bypass -File setup.ps1`
 (Windows) install dependencies and create a local server in `../mc-server`.
 
+Already running a server? Point `mcb` at it and save the settings once:
+
+```bash
+node bin/mcb.js doctor --host play.example.com --port 25565 --rcon-port 25575 --rcon-password '…'
+# all ✓ → put the same values in mcb.config.json:
+#   { "host": "play.example.com", "port": 25565, "rconPort": 25575, "rconPassword": "…", "player": "YourName" }
+```
+
+Settings come from flags, then `MCB_*` environment variables, then `mcb.config.json` (current
+directory or a parent, or `--config <file>`). Without RCON the bot `BuilderBot` joins and needs op.
+
 ### Use with an AI agent
 
 Point your agent (GitHub Copilot, Claude Code, Codex, …) at this repo — the skill file
@@ -66,7 +77,7 @@ design guidance and troubleshooting. Then just ask: *"build me a medieval castle
 | `mcb plan <blueprint> --at x,y,z \| --near <player>` | Read-only: where it lands, what it replaces (incl. chests/signs), commands needed |
 | `mcb build <blueprint> --at x,y,z \| --near <player>` | Build it (`--facing`, `--rotate`, `--mirror`, `--clear`, `--ground`, `--verify`, `--strict`, `--mode fill\|layered\|hand`, `--dimension`, `--dry-run`) |
 | `mcb watch <blueprint> --at …` | Rebuild live every time you save the file (only differences are sent; removed parts are restored) |
-| `mcb undo [id] [--list] [--force]` | Restore what a build changed; blocks edited since are left alone and listed |
+| `mcb undo [id\|file] [--list] [--force] [--any-server]` | Restore what a build changed; blocks edited since (or unreadable) are left alone and listed |
 | `mcb snapshot --from … --to … -o x.json` | Copy a region of the world into a blueprint (`--render` for a PNG) |
 | `mcb export <blueprint> -o x.schem\|x.nbt\|x.json\|x.mcfunction` | Convert; `--datapack <dir>` makes a data pack for single-player |
 | `mcb where [player]` | Player position + facing |

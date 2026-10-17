@@ -13,8 +13,9 @@ export default {
   name: 'house',
   description: 'Cozy timber-framed house: gable/hip/flat roof, windows, door on the south, chimney, lights, furniture',
   params: {
-    width: { type: 'int', default: 8, min: 5, max: 48, description: 'outer size along X' },
-    depth: { type: 'int', default: 8, min: 5, max: 48, description: 'outer size along Z' },
+    style: { type: 'enum', values: ['classic', 'medieval', 'rustic', 'modern'], default: 'classic', description: 'material preset (explicit params override it): classic = red walls; medieval = white walls, dark-oak frame; rustic = spruce cabin; modern = white concrete, flat roof' },
+    width: { type: 'int', default: 8, min: 5, max: 48, description: 'wall footprint along X (the eaves add `overhang` on each side)' },
+    depth: { type: 'int', default: 8, min: 5, max: 48, description: 'wall footprint along Z (the eaves add `overhang` on each side)' },
     height: { type: 'int', default: 5, min: 4, max: 24, description: 'wall height incl. the foundation course (≥9 → 2 storeys, ≥13 → 3)' },
     wall: { type: 'block', default: 'red_concrete', description: 'wall infill (try white_terracotta, spruce_planks, cobblestone, bricks)' },
     roof: { type: 'block', default: 'dark_oak_planks', description: 'roof material — its stairs/slabs are used (no stairs → stepped roof)' },
@@ -31,6 +32,15 @@ export default {
     chimney: { type: 'bool', default: true, description: 'brick chimney with campfire smoke' },
     lights: { type: 'bool', default: true, description: 'lanterns by the door and inside' },
     interior: { type: 'bool', default: true, description: 'furniture: bed, chest, crafting table, table & chairs, carpet' },
+  },
+  presets: {
+    classic: {},
+    medieval: { wall: 'white_terracotta', roof: 'dark_oak_planks', trim: 'stripped_dark_oak_log', foundation: 'cobblestone', floor: 'spruce_planks', height: 6 },
+    rustic: { wall: 'spruce_planks', roof: 'spruce_planks', trim: 'spruce_log', foundation: 'mossy_cobblestone', floor: 'oak_planks' },
+    modern: {
+      wall: 'white_concrete', roof: 'smooth_quartz', roofStyle: 'flat', trim: 'smooth_quartz', foundation: 'gray_concrete',
+      floor: 'polished_andesite', glass: 'gray_stained_glass_pane', shutters: false, chimney: false, door: 'birch_door',
+    },
   },
   build(s, p, ctx) {
     buildHouse(s, p, ctx.rng);

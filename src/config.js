@@ -42,7 +42,7 @@ export function findConfigFile(start = process.cwd()) {
 
 export function readConfigFile(file) {
   try {
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
     if (data.serverDir && !path.isAbsolute(data.serverDir)) data.serverDir = path.resolve(path.dirname(file), data.serverDir);
     return data;
   } catch (e) {
