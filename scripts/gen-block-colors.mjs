@@ -10,8 +10,8 @@
  *   and reads assets/minecraft/textures/{block,entity}/*.png straight out of the zip (no extraction).
  * - Decodes PNGs with pngjs and averages the FIRST animation frame (animated textures are vertical
  *   strips of square frames), alpha-weighted over pixels with alpha > 0.
- * - Grayscale biome-tinted textures get plains tints (grass #91BD59, foliage #77AB2F, water #3F76E4,
- *   spruce #619961, birch #80A755, mangrove #92C648, lily pad #208030).
+ * - Grayscale biome-tinted textures get plains tints (grass #91BD59, foliage #77AB2F, dry foliage #A37546,
+ *   water #3F76E4, spruce #619961, birch #80A755, mangrove #92C648, lily pad #208030).
  * - `a` is the opacity a renderer should use: 1 for opaque and cut-out blocks (plants, rails, doors…),
  *   the average texture alpha for genuinely see-through blocks (glass, ice, water, slime, leaves…).
  * - Only derived average colours are written — no texture images are stored or committed. The
@@ -83,6 +83,7 @@ function readZip(buf) {
   if (eocd < 0) throw new Error('Not a zip file (no end of central directory)');
   const count = buf.readUInt16LE(eocd + 10);
   let p = buf.readUInt32LE(eocd + 16);
+  if (count === 0xffff || p === 0xffffffff) throw new Error('ZIP64 archives are not supported by this minimal reader');
   const entries = new Map();
   for (let k = 0; k < count; k++) {
     if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('Corrupt zip central directory');
@@ -94,7 +95,6 @@ function readZip(buf) {
     p += 46 + nameLen + extraLen + commentLen;
   }
   return {
-    has: (name) => entries.has(name),
     read(name) {
       const e = entries.get(name);
       if (!e) return null;
@@ -109,8 +109,10 @@ function readZip(buf) {
 
 // ───────────────────────────── textures ─────────────────────────────
 
+// Plains biome colours (= colormap/{grass,foliage,dry_foliage}.png sampled at temperature 0.8, downfall 0.4).
 const GRASS = [0x91, 0xbd, 0x59];
 const FOLIAGE = [0x77, 0xab, 0x2f];
+const DRY_FOLIAGE = [0xa3, 0x75, 0x46];
 const SPRUCE = [0x61, 0x99, 0x61];
 const BIRCH = [0x80, 0xa7, 0x55];
 const MANGROVE = [0x92, 0xc6, 0x48];
@@ -168,7 +170,11 @@ function realize(spec) {
   throw new Error(`Bad texture spec ${JSON.stringify(spec)}`);
 }
 
-/** Average colour (alpha-weighted over alpha > 0 pixels) + alpha coverage + "grayscale" flag. */
+/**
+ * Average colour (alpha-weighted over alpha > 0 pixels) + alpha coverage + "grayscale" flag.
+ * Spec forms on top of realize(): literal [r,g,b] · { avg: [spec…] } · { petals: spec } (non-green
+ * pixels only — the flower head, as seen from above) · { bright: spec } (brightest 15% — flames, glow).
+ */
 function stats(spec) {
   if (Array.isArray(spec)) return { rgb: spec, cov: 1, gray: false };
   if (spec && spec.avg) {
@@ -177,13 +183,33 @@ function stats(spec) {
     const rgb = [0, 1, 2].map((c) => parts.reduce((s, p) => s + p.rgb[c], 0) / parts.length);
     return { rgb, cov: parts.reduce((s, p) => s + p.cov, 0) / parts.length, gray: parts.every((p) => p.gray) };
   }
-  const f = realize(spec);
+  const mode = spec?.petals ? 'petals' : spec?.bright ? 'bright' : null;
+  const f = realize(mode ? spec[mode] : spec);
   if (!f) return null;
+  let keep = null;
+  if (mode) {
+    const lum = [], idx = [];
+    for (let i = 0; i < f.px.length; i += 4) {
+      if (f.px[i + 3] <= 0) continue;
+      const [r, g, b] = [f.px[i], f.px[i + 1], f.px[i + 2]];
+      if (mode === 'petals' && g > r + 8 && g > b + 8) continue;
+      idx.push(i);
+      lum.push(0.299 * r + 0.587 * g + 0.114 * b);
+    }
+    if (mode === 'bright') {
+      const cut = [...lum].sort((a, b) => b - a)[Math.max(0, Math.floor(lum.length * 0.15) - 1)];
+      keep = new Set(idx.filter((_, k) => lum[k] >= cut));
+    } else {
+      let opaque = 0;
+      for (let i = 0; i < f.px.length; i += 4) if (f.px[i + 3] > 0) opaque++;
+      if (idx.length >= Math.max(2, opaque * 0.08)) keep = new Set(idx);
+    }
+  }
   let r = 0, g = 0, b = 0, wa = 0, aSum = 0, n = 0, colourful = 0;
   for (let i = 0; i < f.px.length; i += 4) {
     const a = f.px[i + 3];
     aSum += a;
-    if (a <= 0) continue;
+    if (a <= 0 || (keep && !keep.has(i))) continue;
     n++;
     r += f.px[i] * a; g += f.px[i + 1] * a; b += f.px[i + 2] * a; wa += a;
     if (Math.max(Math.abs(f.px[i] - f.px[i + 1]), Math.abs(f.px[i + 1] - f.px[i + 2]), Math.abs(f.px[i] - f.px[i + 2])) > 6) colourful++;
@@ -201,7 +227,12 @@ const WOOD_RE = new RegExp(`^(${WOODS.join('|')})_`);
 const INVISIBLE = new Set(['air', 'cave_air', 'void_air', 'barrier', 'light', 'structure_void', 'moving_piston']);
 
 /** Genuinely see-through blocks: `a` = average texture alpha (everything else gets a = 1). */
-const TRANSLUCENT_RE = /(^glass$|^glass_pane$|stained_glass|^tinted_glass$|^ice$|^frosted_ice$|^water$|^bubble_column$|^slime_block$|^honey_block$|_leaves$|^nether_portal$|^beacon$)/;
+const TRANSLUCENT_RE = /(^glass$|^glass_pane$|stained_glass|^tinted_glass$|^ice$|^frosted_ice$|^water$|^bubble_column$|^slime_block$|^honey_block$|_leaves$|^nether_portal$)/;
+
+/** Flowers: top = petal colour (what you see from above), side = whole-sprite average. */
+const FLOWER_RE = /^(dandelion|poppy|blue_orchid|allium|azure_bluet|(red|orange|white|pink)_tulip|oxeye_daisy|cornflower|lily_of_the_valley|wither_rose|torchflower|open_eyeblossom|closed_eyeblossom|cactus_flower|pink_petals|wildflowers|spore_blossom)$/;
+/** Small light sources: top = brightest pixels (the flame / glow), side = average. */
+const GLOW_RE = /^((soul_|redstone_|copper_)?torch|(soul_|(exposed_|weathered_|oxidized_)?copper_)?lantern|end_rod)$/;
 
 const all = (t) => ({ top: t, side: t });
 const tinted = (t, tint) => ({ t, tint });
@@ -233,6 +264,20 @@ const OVERRIDES = {
   attached_melon_stem: all(tinted('attached_melon_stem', STEM)),
   attached_pumpkin_stem: all(tinted('attached_pumpkin_stem', STEM)),
   redstone_wire: all(tinted('redstone_dust_line0', REDSTONE)),
+  leaf_litter: all(tinted('leaf_litter', DRY_FOLIAGE)),
+  magma_block: all('magma'),
+  dried_ghast: { top: 'dried_ghast_hydration_0_top', side: 'dried_ghast_hydration_0_north' },
+  test_block: all('test_block_start'),
+  sunflower: { top: { petals: 'sunflower_front' }, side: { avg: ['sunflower_front', 'sunflower_bottom'] } },
+  lilac: { top: { petals: 'lilac_top' }, side: { avg: ['lilac_top', 'lilac_bottom'] } },
+  rose_bush: { top: { petals: 'rose_bush_top' }, side: { avg: ['rose_bush_top', 'rose_bush_bottom'] } },
+  peony: { top: { petals: 'peony_top' }, side: { avg: ['peony_top', 'peony_bottom'] } },
+  pitcher_plant: { top: { petals: 'pitcher_crop_top_stage_4' }, side: { avg: ['pitcher_crop_top_stage_4', 'pitcher_crop_bottom_stage_4'] } },
+  flowering_azalea: { top: 'flowering_azalea_top', side: 'flowering_azalea_side' },
+  sweet_berry_bush: { top: { petals: 'sweet_berry_bush_stage3' }, side: 'sweet_berry_bush_stage3' },
+  chest: all({ avg: ['entity/chest/normal', 'oak_planks'] }),
+  trapped_chest: all({ avg: ['entity/chest/trapped', 'oak_planks'] }),
+  ender_chest: all('entity/chest/ender'),
   snow_block: all('snow'),
   smooth_stone_slab: { top: 'smooth_stone', side: 'smooth_stone_slab_side' },
   smooth_quartz: all('quartz_block_bottom'),
@@ -277,15 +322,9 @@ const OVERRIDES = {
   potatoes: all('potatoes_stage3'),
   beetroots: all('beetroots_stage3'),
   nether_wart: all('nether_wart_stage2'),
-  sweet_berry_bush: all('sweet_berry_bush_stage3'),
   cocoa: all('cocoa_stage2'),
   torchflower_crop: all('torchflower_crop_stage1'),
   pitcher_crop: all({ avg: ['pitcher_crop_top_stage_4', 'pitcher_crop_bottom_stage_4'] }),
-  pitcher_plant: all({ avg: ['pitcher_crop_top_stage_4', 'pitcher_crop_bottom_stage_4'] }),
-  sunflower: { top: 'sunflower_front', side: { avg: ['sunflower_front', 'sunflower_bottom'] } },
-  lilac: all({ avg: ['lilac_top', 'lilac_bottom'] }),
-  rose_bush: all({ avg: ['rose_bush_top', 'rose_bush_bottom'] }),
-  peony: all({ avg: ['peony_top', 'peony_bottom'] }),
   tall_seagrass: all({ avg: ['tall_seagrass_top', 'tall_seagrass_bottom'] }),
   big_dripleaf: { top: 'big_dripleaf_top', side: 'big_dripleaf_stem' },
   small_dripleaf: { top: 'small_dripleaf_top', side: 'small_dripleaf_stem_bottom' },
@@ -294,9 +333,6 @@ const OVERRIDES = {
   cake: { top: 'cake_top', side: 'cake_side' },
   end_portal: all([16, 22, 34]),
   end_gateway: all([16, 22, 34]),
-  chest: all('entity/chest/normal'),
-  trapped_chest: all('entity/chest/trapped'),
-  ender_chest: all('entity/chest/ender'),
   bell: all('entity/bell/bell_body'),
   decorated_pot: all('entity/decorated_pot/decorated_pot_side'),
   skeleton_skull: all('entity/skeleton/skeleton'),
@@ -348,24 +384,29 @@ function resolveInner(n) {
   let m;
   if ((m = /^waxed_(.+)$/.exec(n))) return resolve(m[1]);
   if ((m = /^infested_(.+)$/.exec(n))) return resolve(m[1]);
+  if (FLOWER_RE.test(n) && exists(n)) return { top: { petals: n }, side: n };
+  if (GLOW_RE.test(n) && exists(n)) return { top: { bright: n }, side: { avg: [n, { bright: n }] } };
   if ((m = /^(.+)_wood$/.exec(n))) return all(`${m[1]}_log`);
   if ((m = /^(.+)_hyphae$/.exec(n))) return all(`${m[1]}_stem`);
+  if (n === 'wall_torch') return resolve('torch');
   if ((m = /^(.+)_wall_(torch|fan|banner|sign|hanging_sign|head|skull)$/.exec(n))) return resolve(`${m[1]}_${m[2]}`);
   if (/_door$/.test(n) && exists(`${n}_top`)) return all({ avg: [`${n}_top`, `${n}_bottom`] });
-  if ((m = /^(.+)_(sign|hanging_sign)$/.exec(n)) && WOOD_RE.test(n)) return resolve(`${m[1]}_planks`);
-  if ((m = /^(.+)_bed$/.exec(n))) return all(`entity/bed/${m[1]}`);
+  if ((m = /^(.+?)_(hanging_)?sign$/.exec(n)) && WOOD_RE.test(n)) return resolve(`${m[1]}_planks`);
+  if ((m = /^(.+)_bed$/.exec(n))) return { top: `${m[1]}_wool`, side: { avg: [`${m[1]}_wool`, `${m[1]}_wool`, 'oak_planks'] } };
   if ((m = /^(.+)_banner$/.exec(n))) return resolve(`${m[1]}_wool`);
   if ((m = /^(.+)_carpet$/.exec(n))) return (m[1] === 'moss' ? resolve('moss_block') : resolve(`${m[1]}_wool`)) ?? direct(n);
   if ((m = /^(.+)_stained_glass_pane$/.exec(n))) return resolve(`${m[1]}_stained_glass`);
   if (n === 'glass_pane') return resolve('glass');
   if (/candle_cake$/.test(n)) return resolve('cake');
   if (/cauldron$/.test(n)) return resolve('cauldron');
-  if ((m = /^potted_(.+)$/.exec(n))) {
-    const plant = resolve(m[1]);
+  if ((m = /^potted_(.+?)(_bush)?$/.exec(n))) {
+    const plant = resolve(m[1] + (m[2] && !/azalea/.test(m[1]) ? m[2] : ''));
     if (!plant) return null;
-    return { top: plant.side, side: { avg: ['flower_pot', plant.side] } };
+    return { top: plant.top, side: { avg: ['flower_pot', plant.side] } };
   }
+  if ((m = /^(?:(exposed|weathered|oxidized)_)?copper_chest$/.exec(n))) return all({ avg: [`entity/chest/copper${m[1] ? `_${m[1]}` : ''}`, `${m[1] ? `${m[1]}_copper` : 'copper_block'}`] });
   if ((m = /^(.+)_chest$/.exec(n)) && exists(`entity/chest/${m[1]}`)) return all(`entity/chest/${m[1]}`);
+  if ((m = /^(.*copper_golem)_statue$/.exec(n))) return all(`entity/copper_golem/${m[1]}`);
   if ((m = /^(.+)_shulker_box$/.exec(n)) && !exists(n)) return all(`entity/shulker/shulker_${m[1]}`);
   if ((m = SHAPE_SUFFIX_RE.exec(n))) {
     const stem = m[1];
@@ -399,7 +440,11 @@ async function main() {
       if (!top && !side) { unresolved.push(n); continue; }
       const T = top ?? side, S = side ?? top;
       let a = 1;
-      if (TRANSLUCENT_RE.test(n)) a = Math.min(1, Math.max(0.15, Math.round(((T.cov + S.cov) / 2) * 100) / 100));
+      if (TRANSLUCENT_RE.test(n)) {
+        const cov = (T.cov + S.cov) / 2;
+        // Leaves are cut-out sprites, but stacked leaf layers read as nearly solid → only partly see-through.
+        a = Math.min(1, Math.max(0.15, Math.round((/_leaves$/.test(n) ? 0.5 + cov / 2 : cov) * 100) / 100));
+      }
       out[n] = { top: T.rgb.map(round), side: S.rgb.map(round), a };
       const specs = [r.top, r.side].map((s) => (typeof s === 'string' ? s : JSON.stringify(s)));
       if ((T.gray && typeof r.top === 'string') || (S.gray && typeof r.side === 'string')) grayUntinted.push(`${n} (${specs.join(' | ')})`);
@@ -414,7 +459,7 @@ async function main() {
     fs.mkdirSync(path.dirname(OUT), { recursive: true });
     fs.writeFileSync(OUT, json);
     if (REPORT) console.log(notes.join('\n'));
-    if (grayUntinted.length) console.error(`grayscale textures used untinted (check they are not biome-tinted):\n  ${grayUntinted.join('\n  ')}`);
+    if (REPORT && grayUntinted.length) console.error(`grayscale textures used untinted (check they are not biome-tinted):\n  ${grayUntinted.join('\n  ')}`);
     if (unresolved.length) console.error(`no texture found for ${unresolved.length} blocks (renderer falls back to name heuristics):\n  ${unresolved.join(' ')}`);
     console.error(`wrote ${path.relative(ROOT, OUT)}: ${names.length} blocks (${mcData.blocksArray.length} in minecraft-data ${VERSION}) in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   } finally {
