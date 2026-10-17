@@ -49,13 +49,25 @@ async function open(cfg, { dryRun, log, prefer }) {
     return connectRcon({ host: cfg.host, rconPort: cfg.rconPort, rconPassword: cfg.rconPassword, version: cfg.version, log });
   }
   if (kind === 'bot') return connectBot(botCfg);
+  let bot;
   try {
-    return await connectBot(botCfg);
+    bot = await connectBot(botCfg);
   } catch (e) {
     if (cfg.rconPassword && ['KICKED', 'ENDED', 'CONNECT_TIMEOUT'].includes(e.code)) {
       log(`bot could not join (${e.message}) — falling back to RCON`);
-      return connectRcon({ host: cfg.host, rconPort: cfg.rconPort, rconPassword: cfg.rconPassword, version: cfg.version, log });
+      const r = await connectRcon({ host: cfg.host, rconPort: cfg.rconPort, rconPassword: cfg.rconPassword, version: cfg.version, log });
+      r.notes = [`The bot could not join (${e.message}), so this ran over RCON: no undo snapshot or verify.`];
+      return r;
     }
     throw e;
   }
+  if (bot.isOp === false && cfg.rconPassword) {
+    // a non-op bot can't build at all; the console can — but without reads (verify/undo)
+    log(`${bot.username} is not an operator — building over RCON instead (no undo/verify; \`mcb server op ${bot.username}\` enables them)`);
+    await bot.close();
+    const r = await connectRcon({ host: cfg.host, rconPort: cfg.rconPort, rconPassword: cfg.rconPassword, version: cfg.version, log });
+    r.notes = [`${bot.username} is not an operator, so this ran over RCON without undo or verify — run \`mcb server op ${bot.username}\` to get them back.`];
+    return r;
+  }
+  return bot;
 }

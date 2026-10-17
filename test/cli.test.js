@@ -46,8 +46,8 @@ test('resolveConfig precedence: flags > env > file > defaults', () => {
   fs.writeFileSync(file, JSON.stringify({ port: 25570, host: 'example.org', serverDir: 'srv', rconPassword: 'f' }));
   const saved = { ...process.env };
   try {
+    for (const k of Object.keys(process.env)) if (k.startsWith('MCB_')) delete process.env[k]; // a dev shell may set some
     process.env.MCB_PORT = '25580';
-    delete process.env.MCB_HOST;
     const c = resolveConfig({ config: file, username: 'Bob' });
     assert.equal(c.port, 25580);
     assert.equal(c.host, 'example.org');

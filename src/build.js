@@ -179,7 +179,7 @@ export async function executeBuild(o) {
   const version = o.version ?? transport.version ?? undefined;
   const report = {
     schema: REPORT_SCHEMA, ok: false, status: 'failed', name: o.structure.name, transport: transport.kind,
-    serverVersion: transport.version ?? null, warnings: [],
+    serverVersion: transport.version ?? null, warnings: [...(transport.notes ?? [])],
   };
   if (o.mode && !['fill', 'layered', 'hand'].includes(o.mode)) throw new BuildError(`Unknown --mode "${o.mode}" (fill|layered|hand)`, { code: 'BAD_MODE' });
 

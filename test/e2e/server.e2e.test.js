@@ -313,3 +313,17 @@ test('an exported data pack builds the blueprint exactly when run on the server'
   assert.equal(v.unreadable, 0);
   fs.rmSync(path.join(packs, 'e2e_tower'), { recursive: true, force: true });
 });
+test('auto transport: a bot that is not an operator falls back to RCON and says so', { skip: !enabled || !cfg.rconPassword }, async () => {
+  await rcon.command('deop E2ENoOpAuto', { allowErrors: true });
+  const t = await openTransport({ ...cfg, transport: 'auto', username: 'E2ENoOpAuto' }, { log: () => {} });
+  try {
+    assert.equal(t.kind, 'rcon');
+    assert.match(t.notes?.[0] ?? '', /not an operator/);
+    const s = new (await import('../../src/core/structure.js')).Structure().set(0, 0, 0, 'stone');
+    const r = await executeBuild({ structure: s, transport: t, at: [1300, Y, 1100], undo: false });
+    assert.equal(r.ok, true);
+    assert.ok(r.warnings.some((w) => /not an operator/.test(w)));
+  } finally {
+    await t.close();
+  }
+});
