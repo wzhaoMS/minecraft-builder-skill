@@ -129,6 +129,7 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
   let transport = null;
   let connecting = null;
   const cfg = resolveConfig(flags);
+  for (const w of cfg._warnings ?? []) log(`warning: ${w}`);
   // one connection, opened once even when several tool calls arrive together
   const getTransport = async () => {
     if (transport && !transport.closed) return transport;

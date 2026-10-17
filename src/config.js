@@ -6,6 +6,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { lev } from './core/blockinfo.js';
 
 export const DEFAULTS = Object.freeze({
   host: '127.0.0.1',
@@ -40,14 +41,38 @@ export function findConfigFile(start = process.cwd()) {
   }
 }
 
+// other spellings people (and agents) write in mcb.config.json → the real key
+const ALIASES = {
+  'rcon-password': 'rconPassword', rcon_password: 'rconPassword', rconpassword: 'rconPassword',
+  'rcon-port': 'rconPort', rcon_port: 'rconPort', rconport: 'rconPort',
+  'server-dir': 'serverDir', server_dir: 'serverDir', serverdir: 'serverDir',
+  'max-rate': 'maxRate', max_rate: 'maxRate', maxrate: 'maxRate', user: 'username', name: 'username', server: 'host',
+};
+const IGNORED_KEYS = new Set(['$schema', 'comment', '_comment']);
+
 export function readConfigFile(file) {
+  let data;
   try {
-    const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
-    if (data.serverDir && !path.isAbsolute(data.serverDir)) data.serverDir = path.resolve(path.dirname(file), data.serverDir);
-    return data;
+    data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
   } catch (e) {
     throw new Error(`Cannot read ${file}: ${e.message}`);
   }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error(`Cannot read ${file}: expected a JSON object`);
+  const out = {};
+  const unknown = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (k in DEFAULTS) out[k] = v;
+    else if (k === 'rcon' && v && typeof v === 'object') {
+      // { "rcon": { "port": 25575, "password": "…" } }
+      if (v.port !== undefined) out.rconPort ??= v.port;
+      if (v.password !== undefined) out.rconPassword ??= v.password;
+      for (const sub of Object.keys(v)) if (!['port', 'password'].includes(sub)) unknown.push(`rcon.${sub}`);
+    } else if (ALIASES[k] ?? ALIASES[k.toLowerCase()]) out[ALIASES[k] ?? ALIASES[k.toLowerCase()]] ??= v;
+    else if (!IGNORED_KEYS.has(k)) unknown.push(k);
+  }
+  if (out.serverDir && !path.isAbsolute(out.serverDir)) out.serverDir = path.resolve(path.dirname(file), out.serverDir);
+  Object.defineProperty(out, '_unknown', { value: unknown, enumerable: false });
+  return out;
 }
 
 /**
@@ -79,11 +104,22 @@ export function resolveConfig(flags = {}) {
   if (cfg.version === 'auto' || cfg.version === '') cfg.version = null;
   cfg._file = file && fs.existsSync(file) ? file : null;
   cfg._sources = sources;
+  cfg._warnings = (fromFile._unknown ?? []).map((k) => {
+    const close = Object.keys(DEFAULTS).find((d) => lev(d.toLowerCase(), k.toLowerCase()) <= 2);
+    return `${path.basename(file)}: unknown key "${k}" is ignored${close ? ` — did you mean "${close}"?` : ` (known keys: ${Object.keys(DEFAULTS).join(', ')})`}`;
+  });
   return cfg;
 }
 
 export function writeConfigFile(file, data) {
-  const existing = fs.existsSync(file) ? readConfigFile(file) : {};
+  let existing = {};
+  if (fs.existsSync(file)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+    } catch (e) {
+      throw new Error(`Cannot read ${file}: ${e.message}`);
+    }
+  }
   const merged = { ...existing, ...data };
   fs.writeFileSync(file, JSON.stringify(merged, null, 2) + '\n');
   return merged;

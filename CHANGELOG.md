@@ -42,7 +42,10 @@ build → verify → undo loop. Tested end-to-end against Paper 1.21.11 (locally
   differs from the `--near` player's world is reported; bare generator names are case-insensitive
   and unknown names suggest the closest generators (`cottage` → `house`).
 - `watch` sessions: one undo id, resumable after a restart, survive the bot being kicked, NDJSON
-  events with `--json`.
+  events with `--json` (rebuild events carry warnings such as the RCON fallback).
+- `mcb.config.json` also accepts `"rcon": { "port", "password" }` and kebab/snake-case keys;
+  unknown keys are reported (with a did-you-mean) by every command and by `doctor`, instead of
+  being silently ignored.
 - The bot reads player positions and gamerules through `/tellraw`, so servers with
   `send_command_feedback=false` work.
 - Snapshots and undo keep sign text, banner patterns and player heads (what the server shares with

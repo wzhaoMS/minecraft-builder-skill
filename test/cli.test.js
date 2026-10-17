@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, parseCoords, parseParams } from '../src/cli/args.js';
-import { resolveConfig } from '../src/config.js';
+import { resolveConfig, writeConfigFile } from '../src/config.js';
 import { offlineUuid, readProperties, writeProperties } from '../src/server/manage.js';
 import { parseJavaVersion } from '../src/server/java.js';
 import { encodeSnapshot, decodeSnapshot } from '../src/snapshot.js';
@@ -59,6 +59,32 @@ test('resolveConfig precedence: flags > env > file > defaults', () => {
     assert.equal(c._sources.port, 'env');
     assert.equal(c._sources.username, 'flag');
     assert.equal(c._sources.host, 'config');
+  } finally {
+    process.env = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config files: nested rcon, other spellings, unknown keys warn; writes keep other keys', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcb-cfg-'));
+  const file = path.join(dir, 'mcb.config.json');
+  fs.writeFileSync(file, JSON.stringify({ rcon: { port: 25599, password: 'pw' }, server_dir: 'srv', 'max-rate': 50, rconPasword: 'typo', colour: 'red', $schema: 'x' }));
+  const saved = { ...process.env };
+  try {
+    for (const k of Object.keys(process.env)) if (k.startsWith('MCB_')) delete process.env[k];
+    const c = resolveConfig({ config: file });
+    assert.equal(c.rconPort, 25599);
+    assert.equal(c.rconPassword, 'pw');
+    assert.equal(c.serverDir, path.join(dir, 'srv'));
+    assert.equal(c.maxRate, 50);
+    assert.equal(c._warnings.length, 2, c._warnings.join('\n'));
+    assert.match(c._warnings[0], /unknown key "rconPasword" is ignored — did you mean "rconPassword"\?/);
+    assert.match(c._warnings[1], /unknown key "colour".*known keys: host, port/);
+    writeConfigFile(file, { player: 'Steve' });
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(raw.player, 'Steve');
+    assert.equal(raw.colour, 'red', 'keys mcb does not know are kept');
+    assert.equal(raw.server_dir, 'srv', 'relative paths stay relative');
   } finally {
     process.env = saved;
     fs.rmSync(dir, { recursive: true, force: true });

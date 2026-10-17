@@ -200,6 +200,13 @@ function fmtBox(b) {
   return `${b.min.join(',')} → ${b.max.join(',')}`;
 }
 
+/** Resolved config; problems in mcb.config.json (unknown keys…) are printed as warnings. */
+function configFor(flags, out) {
+  const cfg = resolveConfig(flags);
+  for (const w of cfg._warnings ?? []) out.log(`warning: ${w}`);
+  return cfg;
+}
+
 async function loadWithParams(src, flags) {
   if (!src) throw Object.assign(new Error('Missing blueprint argument'), { hint: 'e.g. `mcb info examples/blueprints/cottage.json` or `mcb preview gen:house`', exitCode: 2 });
   const params = parseParams(flags.param, flags.params);
@@ -374,7 +381,7 @@ function buildOptsFromFlags(flags, cfg) {
 }
 
 async function cmdBuild(flags, out, { planOnly = false } = {}) {
-  const cfg = resolveConfig(flags);
+  const cfg = configFor(flags, out);
   const s = await loadWithParams(flags._[1], flags);
   const o = buildOptsFromFlags(flags, cfg);
   o.planOnly = planOnly;
@@ -490,7 +497,7 @@ function printReport(r, out) {
 }
 
 async function cmdWatch(flags, out) {
-  const cfg = resolveConfig(flags);
+  const cfg = configFor(flags, out);
   const file = flags._[1];
   if (!file || !fs.existsSync(file)) throw Object.assign(new Error('Usage: mcb watch <blueprint file> (--at x,y,z | --near <player>) [build flags]'), { exitCode: 2 });
   const o = buildOptsFromFlags(flags, cfg);
@@ -509,6 +516,7 @@ async function cmdWatch(flags, out) {
   let session = new WatchSession();
   let undoId = null, undoNoted = false;
   let busy = null, again = false, stopping = false, n = 0;
+  const shownWarnings = new Set();
   const undoCommand = () => `${selfCommand()} undo ${undoId}${configFlag(flags)}`;
 
   if (o.undo && o.stateDir && !flags.newSession) {
@@ -553,10 +561,11 @@ async function cmdWatch(flags, out) {
         });
         out.print(`[${new Date().toLocaleTimeString()}] #${n} ${report.ok ? '✓' : '✗'} ${report.voxels} blocks, ${report.commandsSent} commands${report.skipped ? ` (${report.skipped} unchanged)` : ''}${report.restored ? `, ${report.restored} removed` : ''}${report.errorCount ? `, ${report.errorCount} errors` : ''}${report.verify ? `, verify ${report.verify.remaining ? `${report.verify.remaining} wrong` : 'ok'}` : ''}`);
         for (const e of report.errors ?? []) out.print(`  ✗ ${e.count}× ${e.message}`);
+        for (const wm of report.warnings ?? []) if (!shownWarnings.has(wm)) { shownWarnings.add(wm); out.print(`  ⚠ ${wm}`); }
         out.event({
           schema: 'mcb.watch-event/1', event: 'rebuild', n, ok: report.ok, voxels: report.voxels, commandsSent: report.commandsSent,
           skipped: report.skipped ?? 0, removed: report.restored ?? 0, box: report.box, errors: report.errors, verify: report.verify ?? null,
-          undo: undoId ? { id: undoId, command: undoCommand() } : null,
+          warnings: report.warnings ?? [], undo: undoId ? { id: undoId, command: undoCommand() } : null,
         });
         return;
       } catch (e) {
@@ -566,7 +575,8 @@ async function cmdWatch(flags, out) {
         return;
       }
     }
-  };  const rebuild = () => {
+  };
+  const rebuild = () => {
     if (stopping) return busy;
     if (busy) { again = true; return busy; }
     busy = (async () => {
@@ -610,7 +620,7 @@ async function cmdWatch(flags, out) {
   return 0;
 }
 async function cmdUndo(flags, out) {
-  const cfg = resolveConfig(flags);
+  const cfg = configFor(flags, out);
   const dir = stateDir(cfg);
   const snaps = listSnapshots(dir);
   if (flags.list) {
@@ -670,7 +680,7 @@ async function cmdPlan(flags, out) {
 }
 
 async function cmdSnapshot(flags, out) {
-  const cfg = resolveConfig(flags);
+  const cfg = configFor(flags, out);
   if (!flags.from || !flags.to) throw Object.assign(new Error('snapshot needs --from x,y,z --to x,y,z'), { exitCode: 2 });
   const a = parseCoords(flags.from, null, '--from'), b = parseCoords(flags.to, null, '--to');
   const box = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2]), Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])];
@@ -706,7 +716,7 @@ async function cmdSnapshot(flags, out) {
 }
 
 async function cmdWhere(flags, out) {
-  const cfg = resolveConfig(flags);
+  const cfg = configFor(flags, out);
   const transport = await openTransport(cfg, { log: (m) => out.log(m) });
   try {
     const name = flags._[1] ?? cfg.player;
@@ -730,7 +740,7 @@ async function cmdWhere(flags, out) {
 }
 
 async function cmdCmd(flags, out) {
-  const cfg = resolveConfig(flags);
+  const cfg = configFor(flags, out);
   const cmds = flags._.slice(1);
   if (!cmds.length) throw Object.assign(new Error('Usage: mcb cmd "time set noon" ["weather clear" …]'), { exitCode: 2 });
   const transport = await openTransport(cfg, { log: (m) => out.log(m) });
@@ -749,7 +759,7 @@ async function cmdCmd(flags, out) {
 }
 
 async function cmdDoctor(flags, out) {
-  const cfg = resolveConfig(flags);
+  const cfg = configFor(flags, out);
   const checks = [];
   const add = (name, status, detail, fix) => {
     checks.push({ name, status, detail, ...(fix ? { fix } : {}) });
@@ -763,7 +773,7 @@ async function cmdDoctor(flags, out) {
   } catch {
     add('dependencies', 'fail', 'mineflayer not installed', 'Run `npm install` in the repo');
   }
-  add('config', cfg._file ? 'ok' : 'warn', cfg._file ? cfg._file : `no ${CONFIG_FILE} in ${process.cwd()} or its parents (using defaults/env/flags)`, cfg._file ? null : 'Pass --host/--port (or --config <file>), or run `mcb server setup --accept-eula` which writes one');
+  add('config', cfg._file ? (cfg._warnings?.length ? 'warn' : 'ok') : 'warn', cfg._file ? `${cfg._file}${cfg._warnings?.length ? ` — ${cfg._warnings.map((w) => w.replace(/^[^:]+: /, '')).join('; ')}` : ''}` : `no ${CONFIG_FILE} in ${process.cwd()} or its parents (using defaults/env/flags)`, cfg._file ? (cfg._warnings?.length ? 'Fix or remove the unknown keys' : null) : 'Pass --host/--port (or --config <file>), or run `mcb server setup --accept-eula` which writes one');
   add('target', 'ok', `${cfg.host}:${cfg.port} as ${cfg.username} (${cfg.auth}), transport=${cfg.transport}; undo snapshots in ${path.join(stateDir(cfg), 'undo')}`);
   const { findJava, javaInstallHint } = await import('../server/java.js');
   if (cfg.serverDir || flags.dir) {
@@ -826,7 +836,7 @@ async function cmdDoctor(flags, out) {
 
 async function cmdServer(flags, out) {
   const sub = flags._[1];
-  const cfg = resolveConfig(flags);
+  const cfg = configFor(flags, out);
   const dir = path.resolve(flags.dir ?? cfg.serverDir ?? path.join(process.cwd(), '..', 'mc-server'));
   const m = await import('../server/manage.js');
   const log = (msg) => out.log(msg);
