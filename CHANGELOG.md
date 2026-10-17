@@ -37,9 +37,9 @@ build → verify → undo loop. Tested end-to-end against Paper 1.21.11 (locally
   (`chain` ↔ `iron_chain`, `grass` → `short_grass`) translated automatically.
 - The bot reads player positions and gamerules through `/tellraw`, so servers with
   `send_command_feedback=false` work.
-- Unit tests (268, incl. an in-memory server for safety regressions), end-to-end tests against a
-  real server (13, incl. a Nether build/undo), GitHub Actions CI on Windows/macOS/Linux × Node
-  22/24 plus an e2e job.
+- Unit tests (270, incl. an in-memory server for safety regressions), end-to-end tests against a
+  real server (14, incl. a Nether build/undo and a bot that logs in inside another world), GitHub
+  Actions CI on Windows/macOS/Linux × Node 22/24 plus an e2e job.
 
 ### Changed
 - SKILL.md rewritten as an agent-first workflow guide; README, troubleshooting, blueprint format,
