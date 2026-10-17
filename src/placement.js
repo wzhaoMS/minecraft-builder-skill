@@ -23,8 +23,25 @@ export function yawToDir(yaw) {
 export function turnsForFacing(facing) {
   const f = String(facing).toLowerCase();
   const t = { south: 0, west: 1, north: 2, east: 3 }[f];
-  if (t === undefined) throw new Error(`Invalid facing "${facing}" (north|east|south|west)`);
+  if (t === undefined) throw badOption(`Invalid facing "${facing}" (north|east|south|west)`);
   return t;
+}
+
+const badOption = (message) => Object.assign(new Error(message), { code: 'BAD_OPTION' });
+
+/**
+ * Check placement options without touching the world (so bad input fails before connecting).
+ * Throws an Error with code BAD_OPTION.
+ */
+export function checkPlacementOptions({ side, facing, anchor, rotate, mirror, gap } = {}) {
+  if (side != null && !VEC[String(side).toLowerCase()]) throw badOption(`Invalid side "${side}" (north|east|south|west)`);
+  if (facing != null) turnsForFacing(facing);
+  if (anchor != null && !['corner', 'center', 'origin'].includes(anchor)) throw badOption(`Invalid anchor "${anchor}" (corner|center|origin)`);
+  if (rotate != null) {
+    try { toQuarterTurns(rotate); } catch (e) { throw badOption(e.message); }
+  }
+  if (mirror != null && mirror !== false && mirror !== 'x' && mirror !== 'z') throw badOption(`Invalid mirror "${mirror}" (x|z)`);
+  if (gap != null && !(Number.isInteger(gap) && gap >= 0 && gap <= 256)) throw badOption(`Invalid gap "${gap}": use a whole number of blocks from 0 to 256`);
 }
 
 /**
@@ -35,7 +52,9 @@ export function turnsForFacing(facing) {
  */
 export function resolvePlacement(structure, opts = {}) {
   let { at, anchor, facing, rotate, mirror = null, pose, gap = 3, side } = opts;
-  if (side != null && !VEC[String(side).toLowerCase()]) throw new Error(`Invalid side "${side}" (north|east|south|west)`);
+  checkPlacementOptions({ side, facing, anchor, rotate, mirror, gap });
+  mirror = mirror || null;
+  gap ??= 3;
   side = side != null ? String(side).toLowerCase() : null;
   let turns;
   if (pose && !at) {
@@ -57,8 +76,7 @@ export function resolvePlacement(structure, opts = {}) {
     anchor = anchor ?? 'corner';
     if (anchor === 'origin') origin = [ax, ay, az];
     else if (anchor === 'center') origin = [ax - b.min[0] - Math.floor(w / 2), ay, az - b.min[2] - Math.floor(d / 2)];
-    else if (anchor === 'corner') origin = [ax - b.min[0], ay, az - b.min[2]];
-    else throw new Error(`Invalid anchor "${anchor}" (corner|center|origin)`);
+    else origin = [ax - b.min[0], ay, az - b.min[2]];
   } else if (pose) {
     // On `side` of the player (default: in front of them), centred on that line, `gap` blocks
     // between them and the build's nearest edge, front facing them.

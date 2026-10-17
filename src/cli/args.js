@@ -58,15 +58,18 @@ export function parseBool(v, what = 'value') {
 /** "x,y,z" | "x y z" → [x,y,z] integers (allows ~ relative to `base`). */
 export function parseCoords(s, base = null, what = 'coordinates') {
   if (Array.isArray(s)) return s;
+  const bad = (msg) => Object.assign(new Error(msg), { exitCode: 2, code: 'BAD_COORDS' });
   const parts = String(s).trim().split(/[\s,]+/);
-  if (parts.length !== 3) throw new Error(`${what} must be "x,y,z", got "${s}"`);
+  if (parts.length !== 3) throw bad(`${what} must be "x,y,z", got "${s}"`);
   return parts.map((p, i) => {
     if (p.startsWith('~')) {
-      if (!base) throw new Error(`Relative ${what} (~) need a reference position`);
-      return Math.floor(base[i]) + (p.length > 1 ? Number(p.slice(1)) : 0);
+      if (!base) throw bad(`Relative ${what} (~) need a reference position`);
+      const off = p.length > 1 ? Number(p.slice(1)) : 0;
+      if (!Number.isFinite(off)) throw bad(`${what}: "${p}" is not ~ followed by a number`);
+      return Math.floor(Math.floor(base[i]) + off);
     }
     const n = Number(p);
-    if (!Number.isFinite(n)) throw new Error(`${what}: "${p}" is not a number`);
+    if (!Number.isFinite(n)) throw bad(`${what}: "${p}" is not a number`);
     return Math.floor(n);
   });
 }

@@ -27,6 +27,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Structure } from '../core/structure.js';
 import { canonical } from '../core/blockstate.js';
+import { lev } from '../core/blockinfo.js';
 
 let generatorsMod = null;
 async function gens() {
@@ -55,6 +56,25 @@ export class BlueprintError extends Error {
 
 const STRUCTURE_EXT = new Set(['.schem', '.schematic', '.nbt', '.litematic']);
 
+// words people use for things a generator makes
+const GENERATOR_SYNONYMS = {
+  cottage: 'house', cabin: 'house', hut: 'house', home: 'house', villa: 'house',
+  fortress: 'castle', keep: 'castle', building: 'skyscraper', office: 'skyscraper', highrise: 'skyscraper',
+  lamp: 'lamppost', streetlight: 'lamppost', ball: 'sphere', globe: 'sphere', sign: 'text', letters: 'text',
+  image: 'pixelart', picture: 'pixelart', street: 'road', town: 'city', mill: 'windmill', monument: 'obelisk',
+};
+
+/** Generator names close to a mistyped / descriptive name. */
+function closeNames(name, names) {
+  const out = [];
+  if (GENERATOR_SYNONYMS[name] && names.includes(GENERATOR_SYNONYMS[name])) out.push(GENERATOR_SYNONYMS[name]);
+  for (const n of names) {
+    if (out.includes(n)) continue;
+    if (lev(name, n) <= Math.max(1, Math.floor(n.length / 3)) || (name.length >= 4 && (n.includes(name) || name.includes(n)))) out.push(n);
+  }
+  return out.slice(0, 3);
+}
+
 /**
  * @param {string} source path or "gen:<name>"
  * @param {{ params?: object, depth?: number }} [opts]
@@ -71,7 +91,14 @@ export async function loadBlueprint(source, opts = {}) {
   if (!fs.existsSync(source)) {
     // Allow bare generator names when no such file exists ("mcb preview house").
     const { listGenerators, runGenerator } = await gens();
-    if (listGenerators().some((g) => g.name === source)) return runGenerator(source, params);
+    const names = listGenerators().map((g) => g.name);
+    if (names.includes(String(source).toLowerCase())) return runGenerator(String(source).toLowerCase(), params);
+    const bare = !/[\\/]/.test(source) && !path.extname(source);
+    if (bare) {
+      const close = closeNames(String(source).toLowerCase(), names);
+      throw new BlueprintError(`Blueprint not found: no file or generator called "${source}"`,
+        `${close.length ? `Did you mean ${close.join(' or ')}? ` : ''}Generators: ${names.join(', ')} (\`mcb generators\` shows their parameters). Or give a path to a .json/.js/.schem/.nbt/.litematic file.`);
+    }
     throw new BlueprintError(`Blueprint not found: ${source}`, 'Give a path to a .json/.js/.schem/.nbt/.litematic file, or a generator name like gen:house (see `mcb generators`).');
   }
   const ext = path.extname(source).toLowerCase();

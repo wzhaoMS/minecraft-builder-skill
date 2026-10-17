@@ -36,6 +36,8 @@ test('parseCoords / parseParams', () => {
   assert.deepEqual(parseCoords('~5,~,~-2', [10.5, 64, 20.2]), [15, 64, 18]);
   assert.throws(() => parseCoords('1,2'), /x,y,z/);
   assert.throws(() => parseCoords('~,1,2'), /reference/);
+  assert.throws(() => parseCoords('~a,1,2', [0, 0, 0]), (e) => /not ~ followed by a number/.test(e.message) && e.exitCode === 2);
+  assert.deepEqual(parseCoords('~1.5,~,~', [10.5, 64, 20]), [11, 64, 20]);
   assert.deepEqual(parseParams(['a=1', 'b=x=y'], '{"c":true}'), { c: true, a: '1', b: 'x=y' });
   assert.throws(() => parseParams(['oops']), /key=value/);
 });
@@ -129,4 +131,40 @@ test('CLI: help, unknown command, info --json, validate errors, dry-run build', 
   assert.equal(noAt.status, 2);
   assert.match(noAt.stderr, /--at x,y,z or --near/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CLI: bad build options fail fast (exit 2, before connecting to the server)', () => {
+  // port 1: nothing listens there, so a connection attempt would report a connection error instead
+  const conn = ['--port', '1', '--rcon-port', '1', '--transport', 'bot'];
+  for (const [args, re] of [
+    [['--near', 'Alex', '--gap', '-2'], /Invalid gap "-2"/],
+    [['--near', 'Alex', '--gap'], /Invalid gap/],
+    [['--near', 'Alex', '--side', 'up'], /Invalid side "up"/],
+    [['--at', '1,2,3', '--facing', 'sideways'], /Invalid facing/],
+    [['--at', '1,2,3', '--mirror', 'y'], /Invalid mirror/],
+    [['--at', '1,2,3', '--mode', 'quick'], /Unknown mode/],
+    [['--at', '1,2,3', '--dimension', 'mars'], /Unknown dimension/],
+    [['--at', '1,2,3', '--bps', 'fast'], /Invalid bps/],
+    [['--at', '1,2'], /--at must be "x,y,z"/],
+    [['--at', '~,~,~'], /needs --near/],
+  ]) {
+    const r = mcb(['plan', 'gen:house', ...args, ...conn, '--json']);
+    assert.equal(r.status, 2, `${args.join(' ')}: ${r.stderr}`);
+    assert.match(r.stderr, re, args.join(' '));
+    assert.doesNotMatch(r.stderr, /connecting/, `${args.join(' ')} must not connect`);
+    assert.equal(JSON.parse(r.stdout).ok, false);
+  }
+});
+
+test('CLI: bare generator names are case-insensitive; unknown names suggest generators', () => {
+  const ok = mcb(['info', 'House', '--json']);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(JSON.parse(ok.stdout).name, 'house');
+  const miss = mcb(['info', 'cottage']);
+  assert.equal(miss.status, 1);
+  assert.match(miss.stderr, /no file or generator called "cottage"/);
+  assert.match(miss.stderr, /Did you mean house\?/);
+  assert.match(miss.stderr, /Generators: .*castle/);
+  assert.match(mcb(['info', 'lighthous']).stderr, /Did you mean lighthouse/);
+  assert.match(mcb(['info', 'missing/file.json']).stderr, /Blueprint not found: missing\/file\.json/);
 });

@@ -562,7 +562,7 @@ export class BotTransport {
         // NBT text components render compact SNBT: [520.5d,-60.0d,560.5d]|[-180.0f,0.0f]|minecraft:overworld
         const [pos, rot, dim] = line.slice('mcb:pose:'.length).split('|');
         const m = /\[\s*(-?[\d.E-]+)d,\s*(-?[\d.E-]+)d,\s*(-?[\d.E-]+)d\s*\]/.exec(pos ?? '');
-        if (!m) throw new TransportError(`Player "${name}" not found online.`, { code: 'NO_PLAYER', hint: 'Names are case-sensitive; `mcb where` lists online players.' });
+        if (!m) throw new TransportError(`Player "${name}" not found online.`, { code: 'NO_PLAYER', hint: 'Is the player online (and spelled right)? `mcb where` lists who is.' });
         const rr = /\[\s*(-?[\d.E-]+)f,\s*(-?[\d.E-]+)f\s*\]/.exec(rot ?? '');
         const d = /"?((?:[a-z0-9_.-]+:)?[a-z0-9_./-]+)"?/.exec((dim ?? '').trim());
         return { x: Number(m[1]), y: Number(m[2]), z: Number(m[3]), yaw: rr ? Number(rr[1]) : 0, pitch: rr ? Number(rr[2]) : 0, dimension: d ? d[1] : null };
@@ -570,7 +570,7 @@ export class BotTransport {
     }
     const pos = await this.query(`data get entity ${name} Pos`);
     if (pos.errors.length || !pos.text) {
-      throw new TransportError(`Player "${name}" not found online.`, { code: 'NO_PLAYER', hint: 'Names are case-sensitive; `mcb where` lists online players.' });
+      throw new TransportError(`Player "${name}" not found online.`, { code: 'NO_PLAYER', hint: 'Is the player online (and spelled right)? `mcb where` lists who is.' });
     }
     const m = /\[(-?[\d.E-]+)d, (-?[\d.E-]+)d, (-?[\d.E-]+)d\]/.exec(pos.text);
     const rot = await this.query(`data get entity ${name} Rotation`);

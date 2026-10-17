@@ -15,7 +15,7 @@ import { Structure } from './core/structure.js';
 import { lintStructure } from './core/lint.js';
 import { parseBlock, blockName, isAir } from './core/blockstate.js';
 import { planBuild, placementState, tileBounds } from './compile/plan.js';
-import { resolvePlacement } from './placement.js';
+import { resolvePlacement, checkPlacementOptions } from './placement.js';
 import { captureRegion, saveSnapshot, newSnapshotId } from './snapshot.js';
 import { withGamerules, recoverGamerules, getGamerule } from './gamerules.js';
 import { defaultProps } from './core/blockinfo.js';
@@ -44,6 +44,28 @@ export function normalizeDimension(d) {
   const k = String(d).toLowerCase().replace(/^minecraft:/, '').replace(/^nether$/, 'the_nether').replace(/^end$/, 'the_end');
   if (!DIMENSIONS[k]) throw new BuildError(`Unknown dimension "${d}" (overworld | the_nether | the_end)`, { code: 'BAD_DIMENSION' });
   return k;
+}
+
+/** "the Overworld" / "the Nether" / "the End" */
+export const dimensionLabel = (d) => ({ overworld: 'the Overworld', the_nether: 'the Nether', the_end: 'the End' })[d] ?? d;
+
+/**
+ * Check build options before connecting or touching the world. Throws a BuildError
+ * (code BAD_OPTION / BAD_MODE / BAD_DIMENSION) describing the first problem.
+ */
+export function validateBuildOptions(o = {}) {
+  if (o.mode != null && !['fill', 'layered', 'hand'].includes(o.mode)) throw new BuildError(`Unknown mode "${o.mode}" (fill|layered|hand)`, { code: 'BAD_MODE' });
+  if (o.dimension != null) normalizeDimension(o.dimension);
+  try {
+    checkPlacementOptions(o);
+  } catch (e) {
+    throw new BuildError(e.message, { code: e.code ?? 'BAD_OPTION' });
+  }
+  if (o.bps != null && !(Number.isFinite(o.bps) && o.bps > 0)) throw new BuildError(`Invalid bps "${o.bps}": use a number of blocks per second above 0`, { code: 'BAD_OPTION' });
+  if (o.clear != null && typeof o.clear !== 'boolean' && !(Number.isInteger(o.clear) && o.clear >= 0 && o.clear <= 64)) {
+    throw new BuildError(`Invalid clear margin "${o.clear}": use a whole number of blocks from 0 to 64`, { code: 'BAD_OPTION' });
+  }
+  if (o.at != null && !(Array.isArray(o.at) && o.at.length === 3 && o.at.every(Number.isFinite))) throw new BuildError(`Invalid at ${JSON.stringify(o.at)}: use [x, y, z]`, { code: 'BAD_OPTION' });
 }
 
 const TILE = 64;
@@ -179,9 +201,9 @@ export async function executeBuild(o) {
   const version = o.version ?? transport.version ?? undefined;
   const report = {
     schema: REPORT_SCHEMA, ok: false, status: 'failed', name: o.structure.name, transport: transport.kind,
-    serverVersion: transport.version ?? null, warnings: [...(transport.notes ?? [])],
+    serverVersion: transport.version ?? null, warnings: [...(transport.notes ?? []), ...(o.notes ?? [])],
   };
-  if (o.mode && !['fill', 'layered', 'hand'].includes(o.mode)) throw new BuildError(`Unknown --mode "${o.mode}" (fill|layered|hand)`, { code: 'BAD_MODE' });
+  validateBuildOptions(o);
 
   // 1. lint (no world access yet: invalid input ⇒ zero mutations)
   const structure = o.structure.clone();
@@ -206,7 +228,13 @@ export async function executeBuild(o) {
           : 'Use --at x,y,z instead.',
       });
     }
-    if (!dimension && pose.dimension) dimension = normalizeDimension(pose.dimension);
+    if (pose.dimension) {
+      const playerDim = String(pose.dimension).replace(/^minecraft:/, '');
+      if (!dimension) dimension = normalizeDimension(pose.dimension);
+      else if (playerDim !== dimension) {
+        report.warnings.push(`${o.near} is in ${dimensionLabel(playerDim)}, but the build goes to ${dimensionLabel(dimension)} (dimension was given) at their coordinates`);
+      }
+    }
   }
   dimension ??= 'overworld';
   const dim = DIMENSIONS[dimension];

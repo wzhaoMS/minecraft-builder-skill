@@ -10,7 +10,7 @@ import { resolveConfig, writeConfigFile, stateDir, CONFIG_FILE } from '../config
 import { loadBlueprint } from '../io/blueprint.js';
 import { lintStructure } from '../core/lint.js';
 import { planBuild } from '../compile/plan.js';
-import { executeBuild } from '../build.js';
+import { executeBuild, validateBuildOptions, dimensionLabel, normalizeDimension } from '../build.js';
 import { openTransport, onlinePlayers } from '../connect.js';
 import { listSnapshots, captureRegion } from '../snapshot.js';
 import { DEFAULT_MC_VERSION } from '../core/blockinfo.js';
@@ -346,6 +346,8 @@ async function cmdGenerate(flags, out) {
 }
 
 function buildOptsFromFlags(flags, cfg) {
+  // a flag given without a value (`--gap`) parses as true: make it fail validation instead of meaning 1
+  const num = (v) => (v === undefined ? undefined : v === true ? NaN : Number(v));
   return {
     at: undefined,
     near: flags.near && flags.near !== true ? flags.near : undefined,
@@ -354,14 +356,14 @@ function buildOptsFromFlags(flags, cfg) {
     rotate: flags.rotate,
     mirror: flags.mirror,
     anchor: flags.anchor,
-    gap: flags.gap !== undefined ? Number(flags.gap) : undefined,
+    gap: num(flags.gap),
     clear: flags.clear === undefined || flags.clear === false ? false : flags.clear === true ? true : Number(flags.clear),
     ground: flags.ground && flags.ground !== true ? flags.ground : undefined,
     verify: !!flags.verify,
     repair: flags.repair !== false,
     strict: !!flags.strict,
     mode: flags.mode ?? 'fill',
-    bps: flags.bps !== undefined ? Number(flags.bps) : undefined,
+    bps: num(flags.bps),
     undo: flags.undo !== false,
     dryRun: !!flags.dryRun,
     force: !!flags.force,
@@ -382,14 +384,11 @@ async function cmdBuild(flags, out, { planOnly = false } = {}) {
       code: 'PLACEMENT_REQUIRED', hint: 'Find coordinates with `mcb where <player>` (F3 in game), or set "player" in mcb.config.json.', exitCode: 2,
     });
   }
+  checkBuildFlags(flags, o, cfg);
   const transport = await openTransport(cfg, { dryRun: o.dryRun, log: (m) => out.log(m) });
   try {
-    if (flags.at) {
-      const needsBase = String(flags.at).includes('~');
-      const pose = needsBase ? await poseOf(transport, o.near ?? cfg.player) : null;
-      o.at = parseCoords(flags.at, pose && [pose.x, pose.y, pose.z], '--at');
-      if (pose?.dimension && !o.dimension) o.dimension = pose.dimension; // ~ is relative to the player, in the player's dimension
-    } else if (o.dryRun && !o.near) {
+    if (flags.at && !o.at) await resolveRelativeAt(flags, o, cfg, transport);
+    else if (o.dryRun && !o.near && !o.at) {
       o.at = [0, 0, 0];
     }
     out.log(`${planOnly ? 'planning' : 'building'} "${s.name}" via ${transport.kind}${transport.version ? ` (server ${transport.version})` : ''}…`);
@@ -414,7 +413,7 @@ async function cmdBuild(flags, out, { planOnly = false } = {}) {
 }
 
 function printPlan(r, out) {
-  out.print(`plan for "${r.name}" in the ${r.dimension}: ${r.size.join('×')} at ${r.box.slice(0, 3).join(',')} → ${r.box.slice(3).join(',')} (${facingNote(r)})`);
+  out.print(`plan for "${r.name}" in ${dimensionLabel(r.dimension)}: ${r.size.join('×')} at ${r.box.slice(0, 3).join(',')} → ${r.box.slice(3).join(',')} (${facingNote(r)})`);
   out.print(`  ${r.voxels} blocks → ${r.plan.commands} commands; ${r.commandsToSend ?? r.plan.commands} needed now${r.skipped ? ` (${r.skipped} already in place)` : ''}, ~${r.estimatedSeconds ?? '?'}s`);
   if (r.impact) {
     const top = Object.entries(r.impact.replaced).slice(0, 6).map(([b, n]) => `${n} ${b}`).join(', ');
@@ -430,6 +429,33 @@ function printPlan(r, out) {
 /** "turned so its front faces east" / "not turned: its south side is the front" */
 function facingNote(r) {
   return r.facing && r.facing !== 'south' ? `turned so its front faces ${r.facing}` : 'not turned: its south side is the front';
+}
+
+/** Usage problems in build/plan/watch flags fail before connecting (exit 2). Absolute --at is parsed here. */
+function checkBuildFlags(flags, o, cfg) {
+  try {
+    validateBuildOptions(o);
+  } catch (e) {
+    throw Object.assign(e, { exitCode: 2 });
+  }
+  if (flags.at === true) throw Object.assign(new Error('--at needs coordinates: --at x,y,z'), { exitCode: 2, code: 'BAD_COORDS' });
+  if (!flags.at) return;
+  if (!String(flags.at).includes('~')) o.at = parseCoords(flags.at, null, '--at');
+  else if (!(o.near ?? cfg.player)) throw Object.assign(new Error('Relative --at (~) needs --near <player> (or "player" in config)'), { exitCode: 2, code: 'PLACEMENT_REQUIRED' });
+  else parseCoords(flags.at, [0, 0, 0], '--at'); // syntax check only
+}
+
+/** --at with ~: relative to the --near (or config) player, in that player's dimension. */
+async function resolveRelativeAt(flags, o, cfg, transport) {
+  const who = o.near ?? cfg.player;
+  const pose = await poseOf(transport, who);
+  o.at = parseCoords(flags.at, [pose.x, pose.y, pose.z], '--at');
+  if (!pose.dimension) return;
+  const playerDim = String(pose.dimension).replace(/^minecraft:/, '');
+  if (!o.dimension) o.dimension = pose.dimension;
+  else if (normalizeDimension(o.dimension) !== playerDim) {
+    (o.notes ??= []).push(`${who} is in ${dimensionLabel(playerDim)}, but the build goes to ${dimensionLabel(normalizeDimension(o.dimension))} (--dimension) at coordinates relative to them`);
+  }
 }
 
 async function poseOf(transport, player) {
@@ -475,13 +501,10 @@ async function cmdWatch(flags, out) {
   // the same file + the same placement request continues the previous session (its blocks are
   // updated in place and one undo id covers everything), unless --new-session
   const request = JSON.stringify({ at: flags.at ?? null, near: o.near ?? null, side: o.side ?? null, facing: o.facing ?? null, anchor: o.anchor ?? null, rotate: o.rotate ?? null, mirror: o.mirror ?? null, dimension: o.dimension ?? null, gap: o.gap ?? null });
+  checkBuildFlags(flags, o, cfg);
   const transport = await openTransport(cfg, { log: (m) => out.log(m) });
   const { saveSnapshot, newSnapshotId, decodeSnapshot } = await import('../snapshot.js');
-  if (flags.at) {
-    const pose = String(flags.at).includes('~') ? await poseOf(transport, o.near ?? cfg.player) : null;
-    o.at = parseCoords(flags.at, pose && [pose.x, pose.y, pose.z], '--at');
-    if (pose?.dimension && !o.dimension) o.dimension = pose.dimension;
-  }
+  if (flags.at && !o.at) await resolveRelativeAt(flags, o, cfg, transport);
   const { WatchSession } = await import('../watch.js');
   let session = new WatchSession();
   let undoId = null, undoNoted = false;

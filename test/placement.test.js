@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Structure } from '../src/core/structure.js';
-import { resolvePlacement, yawToDir, turnsForFacing } from '../src/placement.js';
+import { resolvePlacement, yawToDir, turnsForFacing, checkPlacementOptions } from '../src/placement.js';
+import { validateBuildOptions, dimensionLabel } from '../src/build.js';
 
 const house = () => new Structure()
   .fill(0, 0, 0, 8, 0, 4, 'stone') // 9 wide (x), 5 deep (z)
@@ -72,4 +73,33 @@ test('near a player on another side: --side west --gap 40 puts it 40 blocks west
 test('placement errors are helpful', () => {
   assert.throws(() => resolvePlacement(house(), {}), /--at x,y,z or --near/);
   assert.throws(() => resolvePlacement(new Structure(), { at: [0, 0, 0] }), /empty/);
+});
+
+test('placement options are checked before anything else (bad gap/side/mirror/anchor/rotate)', () => {
+  const pose = { x: 0, y: 0, z: 0, yaw: 0 };
+  const bad = [
+    [{ gap: -2 }, /Invalid gap "-2"/], [{ gap: NaN }, /Invalid gap/], [{ gap: 1.5 }, /Invalid gap/],
+    [{ side: 'up' }, /Invalid side/], [{ facing: 'up' }, /Invalid facing/], [{ anchor: 'middle' }, /Invalid anchor/],
+    [{ rotate: 45 }, /multiple of 90/], [{ mirror: 'y' }, /Invalid mirror/], [{ mirror: true }, /Invalid mirror/],
+  ];
+  for (const [o, re] of bad) {
+    assert.throws(() => checkPlacementOptions(o), (e) => re.test(e.message) && e.code === 'BAD_OPTION', JSON.stringify(o));
+    assert.throws(() => resolvePlacement(house(), { pose, ...o }), re);
+  }
+  checkPlacementOptions({ gap: 0, side: 'West', facing: 'NORTH', anchor: 'center', rotate: 270, mirror: 'x' });
+  const zero = resolvePlacement(house(), { pose: { x: 0.5, y: 0, z: 0.5, yaw: 0 }, gap: 0 });
+  assert.equal(zero.bbox.min[2], 1, 'gap 0: right next to the player');
+});
+
+test('validateBuildOptions: mode, dimension, bps, clear, at', () => {
+  validateBuildOptions({ mode: 'layered', dimension: 'nether', bps: 5, clear: 3, at: [1, 2, 3], gap: 4 });
+  validateBuildOptions({ clear: true });
+  for (const [o, code, re] of [
+    [{ mode: 'fast' }, 'BAD_MODE', /Unknown mode/], [{ dimension: 'mars' }, 'BAD_DIMENSION', /Unknown dimension/],
+    [{ bps: 0 }, 'BAD_OPTION', /bps/], [{ bps: NaN }, 'BAD_OPTION', /bps/], [{ clear: -1 }, 'BAD_OPTION', /clear/],
+    [{ clear: NaN }, 'BAD_OPTION', /clear/], [{ at: [1, 2] }, 'BAD_OPTION', /\[x, y, z\]/], [{ gap: -1 }, 'BAD_OPTION', /gap/],
+  ]) {
+    assert.throws(() => validateBuildOptions(o), (e) => e.code === code && re.test(e.message), JSON.stringify(o));
+  }
+  assert.equal(dimensionLabel('the_nether'), 'the Nether');
 });

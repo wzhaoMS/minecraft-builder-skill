@@ -30,7 +30,7 @@ const buildProperties = {
   at: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 },
   near: { type: 'string', description: 'Player name: build next to them (default: in front of them), front facing them' },
   side: { type: 'string', enum: ['north', 'east', 'south', 'west'], description: 'With near: which side of the player to build on (default: the way they look)' },
-  gap: { type: 'integer', description: 'With near: blocks between the player and the build (default 3)' },
+  gap: { type: 'integer', minimum: 0, description: 'With near: blocks between the player and the build (default 3)' },
   facing: { type: 'string', enum: ['north', 'east', 'south', 'west'] },
   anchor: { type: 'string', enum: ['corner', 'center', 'origin'] },
   dimension: { type: 'string', enum: ['overworld', 'the_nether', 'the_end'] },

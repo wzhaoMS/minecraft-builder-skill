@@ -252,7 +252,7 @@ export class RconTransport {
   async playerPose(name) {
     const pos = await this.client.command(`data get entity ${name} Pos`);
     const m = /\[(-?[\d.E-]+)d, (-?[\d.E-]+)d, (-?[\d.E-]+)d\]/.exec(pos);
-    if (!m) throw new TransportError(`Player "${name}" not found online (${pos.trim()})`, { code: 'NO_PLAYER', hint: 'Names are case-sensitive; check `mcb where` (lists online players).' });
+    if (!m) throw new TransportError(`Player "${name}" not found online (${pos.trim()})`, { code: 'NO_PLAYER', hint: 'Is the player online (and spelled right)? `mcb where` lists who is.' });
     const rot = await this.client.command(`data get entity ${name} Rotation`);
     const r = /\[(-?[\d.E-]+)f, (-?[\d.E-]+)f\]/.exec(rot);
     const dim = await this.client.command(`data get entity ${name} Dimension`);

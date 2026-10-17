@@ -37,6 +37,10 @@ build → verify → undo loop. Tested end-to-end against Paper 1.21.11 (locally
   (`chain` ↔ `iron_chain`, `grass` → `short_grass`) translated automatically.
 - Placement around a player: `--near <player> --side west --gap 40`; `preview --facing`,
   `preview --cut <y>`; per-command help (`mcb build --help`).
+- Build options (`--at`, `--gap`, `--side`, `--facing`, `--mirror`, `--rotate`, `--mode`,
+  `--dimension`, `--bps`, `--clear`) are checked before connecting (exit 2); a `--dimension` that
+  differs from the `--near` player's world is reported; bare generator names are case-insensitive
+  and unknown names suggest the closest generators (`cottage` → `house`).
 - `watch` sessions: one undo id, resumable after a restart, survive the bot being kicked, NDJSON
   events with `--json`.
 - The bot reads player positions and gamerules through `/tellraw`, so servers with

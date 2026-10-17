@@ -108,7 +108,7 @@ export function twoBlockInfo(block, version = DEFAULT_MC_VERSION) {
 }
 
 /** Levenshtein distance (small strings). */
-function lev(a, b) {
+export function lev(a, b) {
   const m = a.length, n = b.length;
   const dp = new Array(n + 1);
   for (let j = 0; j <= n; j++) dp[j] = j;
