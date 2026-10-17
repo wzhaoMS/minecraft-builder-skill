@@ -6,6 +6,7 @@
  * along X, then Z (whole rows), then Y (whole rectangles), never exceeding `maxVolume`
  * (the server's max_block_modifications / commandModificationBlockLimit, default 32768).
  */
+import { unpackSectionKey } from '../core/structure.js';
 
 /**
  * @typedef {{ x1:number, y1:number, z1:number, x2:number, y2:number, z2:number, id:number }} Box
@@ -20,10 +21,7 @@ export function greedyBoxes(structure, { maxVolume = 32768, tile = 64, ids = nul
   if (tile % 16 !== 0) throw new Error('tile must be a multiple of 16');
   const tiles = new Map(); // "tx,tz" → [{key, sec, sx, sy, sz}]
   for (const [key, sec] of structure._sections) {
-    const sy = (key % 256) - 128;
-    const rest = Math.floor(key / 256);
-    const sz = (rest % 2 ** 18) - 2 ** 17;
-    const sx = Math.floor(rest / 2 ** 18) - 2 ** 17;
+    const [sx, sy, sz] = unpackSectionKey(key);
     const tx = Math.floor((sx * 16) / tile), tz = Math.floor((sz * 16) / tile);
     const tk = tx + ',' + tz;
     if (!tiles.has(tk)) tiles.set(tk, { tx, tz, secs: [] });

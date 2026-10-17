@@ -85,8 +85,12 @@ export function resolveParams(gen, params = {}) {
     }
   }
   for (const [k, spec] of Object.entries(specs)) out[k] = coerce(k, spec, params[k]);
-  // a generator may declare its own default seed (as a 'seed' param); otherwise 1
-  if (!('seed' in specs)) out.seed = params.seed ?? gen.defaultSeed ?? 1;
+  // a generator may declare its own default seed (as a 'seed' param); otherwise 1. A numeric
+  // string ("-p seed=2" on the CLI) is the same seed as the number 2 in JSON / JS.
+  if (!('seed' in specs)) {
+    const seed = params.seed ?? gen.defaultSeed ?? 1;
+    out.seed = typeof seed === 'string' && /^-?\d+$/.test(seed.trim()) ? Number(seed.trim()) : seed;
+  }
   return out;
 }
 

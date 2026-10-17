@@ -109,15 +109,16 @@ export function snapshotDir(stateDir) {
   return path.join(stateDir, 'undo');
 }
 
-export function saveSnapshot(stateDir, snap) {
+export function saveSnapshot(stateDir, snap, { overwrite = false } = {}) {
   const dir = snapshotDir(stateDir);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${snap.id}.json.gz`);
-  fs.writeFileSync(file, encodeSnapshot(snap));
+  // new snapshots never silently replace an existing one ('wx' = fail if it exists)
+  fs.writeFileSync(file, encodeSnapshot(snap), { flag: overwrite ? 'w' : 'wx' });
   return file;
 }
 
-/** Snapshots newest first: [{ id, file, name, createdAt, box }] */
+/** Snapshots newest first: [{ id, file, mtime }] */
 export function listSnapshots(stateDir) {
   const dir = snapshotDir(stateDir);
   if (!fs.existsSync(dir)) return [];
@@ -127,10 +128,11 @@ export function listSnapshots(stateDir) {
       const file = path.join(dir, f);
       return { id: f.replace(/\.json\.gz$/, ''), file, mtime: fs.statSync(file).mtimeMs };
     })
-    .sort((a, b) => b.mtime - a.mtime);
+    .sort((a, b) => b.mtime - a.mtime || (a.id < b.id ? 1 : -1));
 }
 
 export function newSnapshotId(name = 'build') {
   const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
-  return `${ts}-${String(name).replace(/[^a-z0-9_-]+/gi, '_').slice(0, 40)}`;
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `${ts}-${String(name).replace(/[^a-z0-9_-]+/gi, '_').slice(0, 40)}-${rand}`;
 }

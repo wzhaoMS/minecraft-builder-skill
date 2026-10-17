@@ -10,8 +10,27 @@ import { DryRunTransport } from './transport/dry.js';
 
 export async function openTransport(cfg, { dryRun = false, log = () => {}, prefer = null } = {}) {
   const t = await open(cfg, { dryRun, log, prefer });
-  t.serverKey = `${cfg.host}:${cfg.port}`;
+  t.serverKey = normalizeServerKey(`${cfg.host}:${cfg.port}`);
   return t;
+}
+
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', '']);
+
+/** Online player names: the bot's tab list, or parsed from /list over RCON. */
+export async function onlinePlayers(transport) {
+  if (transport.listPlayers) return transport.listPlayers();
+  const r = await transport.query('list');
+  const m = /online:\s*(.*)$/is.exec(r.text ?? '');
+  return m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
+}
+
+/** `host:port` with loopback spellings unified, so snapshots/journals match regardless of how the server was addressed. */
+export function normalizeServerKey(key) {
+  const s = String(key).trim().toLowerCase();
+  const i = s.lastIndexOf(':');
+  const host = i > 0 && !s.endsWith(']') ? s.slice(0, i) : s;
+  const port = i > 0 && !s.endsWith(']') ? s.slice(i + 1) : '25565';
+  return `${LOOPBACK.has(host) ? '127.0.0.1' : host}:${port}`;
 }
 
 async function open(cfg, { dryRun, log, prefer }) {

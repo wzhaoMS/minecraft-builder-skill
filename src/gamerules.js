@@ -11,6 +11,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { normalizeServerKey } from './connect.js';
 
 export const GAMERULES = {
   logAdminCommands: ['log_admin_commands', 'logAdminCommands'],
@@ -24,6 +25,7 @@ export const GAMERULES = {
 };
 
 const resolved = new WeakMap(); // transport → { key: name }
+const INT_RULES = new Set(['maxBlockModifications', 'maxCommandChainLength']);
 
 /** @returns {Promise<{ name: string, value: string } | null>} */
 export async function getGamerule(transport, key) {
@@ -31,12 +33,18 @@ export async function getGamerule(transport, key) {
   const cache = resolved.get(transport) ?? {};
   const order = cache[key] ? [cache[key], ...names.filter((n) => n !== cache[key])] : names;
   for (const name of order) {
-    const r = await transport.query(`gamerule ${name}`);
+    const r = await transport.query(inDimension(transport, `gamerule ${name}`));
     const m = /currently set to:\s*(\S+)/i.exec(r.text);
-    if (m) {
+    let value = m ? m[1] : null;
+    if (value == null && !r.errors?.length && transport.queryResult) {
+      // no output but no error: a bot can't see command output while send_command_feedback is off
+      const v = await transport.queryResult(inDimension(transport, `gamerule ${name}`)).catch(() => null);
+      if (v?.ok) value = INT_RULES.has(key) || !(key in GAMERULES) ? String(v.value) : String(v.value !== 0);
+    }
+    if (value != null) {
       cache[key] = name;
       resolved.set(transport, cache);
-      return { name, value: m[1] };
+      return { name, value };
     }
   }
   return null;
@@ -45,25 +53,63 @@ export async function getGamerule(transport, key) {
 export async function setGamerule(transport, key, value) {
   const cur = await getGamerule(transport, key);
   if (!cur) return null;
-  await transport.command(`gamerule ${cur.name} ${value}`, { allowErrors: true });
+  await transport.command(inDimension(transport, `gamerule ${cur.name} ${value}`), { allowErrors: true });
   return cur;
 }
 
 const JOURNAL = 'gamerules-pending.json';
 
-/** Restore gamerules left changed by a crashed/killed earlier run (same server). */
+/** One journal per server, so a shared state directory never mixes up two servers' rules. */
+function journalPath(journalDir, transport) {
+  const key = transport.serverKey ? normalizeServerKey(transport.serverKey).replace(/[^a-z0-9.-]+/gi, '_') : null;
+  return path.join(journalDir, key ? `gamerules-pending-${key}.json` : JOURNAL);
+}
+
+/** Paper keeps gamerules per world: address the world being built in, not the console's overworld. */
+function inDimension(transport, cmd, dim = transport.dimension) {
+  return dim && dim !== 'minecraft:overworld' ? `execute in ${dim} run ${cmd}` : cmd;
+}
+
+function readJournal(file) {
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return { server: data.server ?? null, rules: Array.isArray(data.rules) ? data.rules : [] };
+  } catch {
+    return null;
+  }
+}
+
+function writeJournal(file, data) {
+  if (!data.rules.length) { fs.rmSync(file, { force: true }); return; }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ ...data, at: new Date().toISOString() }));
+}
+
+async function applyRule(transport, [name, value, dim]) {
+  try {
+    const r = await transport.command(inDimension(transport, `gamerule ${name} ${value}`, dim ?? null), { allowErrors: true });
+    return !r.errors?.length;
+  } catch {
+    return false;
+  }
+}
+
+const sameServer = (a, b) => !a || !b || normalizeServerKey(a) === normalizeServerKey(b);
+
+/** Restore gamerules left changed by a crashed/killed earlier run (same server). Rules that fail to restore stay journaled. */
 export async function recoverGamerules(transport, journalDir) {
   if (!journalDir || transport.kind === 'dry-run') return [];
-  const file = path.join(journalDir, JOURNAL);
-  if (!fs.existsSync(file)) return [];
-  let data;
-  try { data = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { fs.rmSync(file, { force: true }); return []; }
-  if (data.server && transport.serverKey && data.server !== transport.serverKey) return [];
-  for (const [name, value] of data.rules ?? []) {
-    try { await transport.command(`gamerule ${name} ${value}`, { allowErrors: true }); } catch { /* ignore */ }
+  const done = [];
+  for (const file of new Set([journalPath(journalDir, transport), path.join(journalDir, JOURNAL)])) {
+    if (!fs.existsSync(file)) continue;
+    const data = readJournal(file);
+    if (!data) { fs.rmSync(file, { force: true }); continue; }
+    if (!sameServer(data.server, transport.serverKey)) continue;
+    const failed = [];
+    for (const rule of data.rules) (await applyRule(transport, rule) ? done : failed).push(rule);
+    writeJournal(file, { server: data.server, rules: failed });
   }
-  fs.rmSync(file, { force: true });
-  return data.rules ?? [];
+  return done;
 }
 
 /**
@@ -73,18 +119,22 @@ export async function recoverGamerules(transport, journalDir) {
  */
 export async function withGamerules(transport, settings, fn, { journalDir = null } = {}) {
   const restore = [];
-  const journal = journalDir ? path.join(journalDir, JOURNAL) : null;
+  const journal = journalDir ? journalPath(journalDir, transport) : null;
+  const dim = transport.dimension ?? null;
   if (transport.kind !== 'dry-run') {
+    if (journal) await recoverGamerules(transport, journalDir);
     for (const [key, value] of Object.entries(settings)) {
       try {
         const cur = await getGamerule(transport, key);
         if (cur && String(cur.value) !== String(value)) {
-          restore.push([cur.name, cur.value]);
-          if (journal) {
-            fs.mkdirSync(journalDir, { recursive: true });
-            fs.writeFileSync(journal, JSON.stringify({ server: transport.serverKey ?? null, rules: restore, at: new Date().toISOString() }));
-          }
-          await transport.command(`gamerule ${cur.name} ${value}`, { allowErrors: true });
+          const prev = journal ? readJournal(journal) : null;
+          const keep = prev && sameServer(prev.server, transport.serverKey) ? prev.rules : [];
+          const same = ([n, , d]) => n === cur.name && (d ?? null) === dim;
+          // an earlier crashed run may already have changed this rule: its journaled value is the real original
+          const original = keep.find(same);
+          restore.push([cur.name, original ? original[1] : cur.value, dim]);
+          if (journal) writeJournal(journal, { server: transport.serverKey ?? null, rules: [...keep.filter((r) => !same(r)), restore.at(-1)] });
+          await transport.command(inDimension(transport, `gamerule ${cur.name} ${value}`, dim), { allowErrors: true });
         }
       } catch {
         // non-fatal: building still works, players may just see command echo
@@ -95,10 +145,17 @@ export async function withGamerules(transport, settings, fn, { journalDir = null
   const restoreAll = async () => {
     if (restored) return;
     restored = true;
-    for (const [name, value] of restore) {
-      try { await transport.command(`gamerule ${name} ${value}`, { allowErrors: true }); } catch { /* ignore */ }
+    const failed = [];
+    for (const rule of restore) if (!(await applyRule(transport, rule))) failed.push(rule);
+    if (journal && restore.length) {
+      // keep anything we could not restore (and other runs' entries) so the next run retries it
+      const prev = readJournal(journal);
+      const others = (prev?.rules ?? []).filter(([n, , d]) => !restore.some(([rn, , rd]) => rn === n && (rd ?? null) === (d ?? null)));
+      writeJournal(journal, { server: transport.serverKey ?? null, rules: [...others, ...failed] });
     }
-    if (journal && restore.length) fs.rmSync(journal, { force: true });
+    // retry whatever an earlier interrupted run left behind (its restore may have failed at the start)
+    if (journal && fs.existsSync(journal) && !failed.length) await recoverGamerules(transport, journalDir).catch(() => {});
+    if (failed.length) transport.log?.(`warning: could not restore gamerule(s) ${failed.map(([n, v]) => `${n}=${v}`).join(', ')} — they will be retried on the next run`);
   };
   const onSignal = () => { restoreAll().finally(() => process.exit(130)); };
   if (restore.length) { process.once('SIGINT', onSignal); process.once('SIGTERM', onSignal); }

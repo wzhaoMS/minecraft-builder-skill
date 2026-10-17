@@ -24,6 +24,34 @@ export function mcData(version = DEFAULT_MC_VERSION) {
   return d;
 }
 
+const blockClassCache = new Map();
+const defaultPropsCache = new Map();
+/**
+ * Property values Minecraft uses when a state string omits them (e.g. `oak_stairs` →
+ * { facing: 'north', half: 'bottom', shape: 'straight', waterlogged: 'false' }). null if unknown.
+ */
+export function defaultProps(name, version = DEFAULT_MC_VERSION) {
+  const key = `${version}|${name}`;
+  if (defaultPropsCache.has(key)) return defaultPropsCache.get(key);
+  let out = null;
+  const def = mcData(version)?.blocksByName?.[name];
+  if (def && def.states?.length) {
+    try {
+      let Block = blockClassCache.get(version);
+      if (!Block) { Block = require('prismarine-block')(version); blockClassCache.set(version, Block); }
+      const props = Block.fromStateId(def.defaultState, 0).getProperties();
+      out = {};
+      for (const [k, v] of Object.entries(props)) out[k] = String(v);
+    } catch {
+      out = null;
+    }
+  } else if (def) {
+    out = {};
+  }
+  defaultPropsCache.set(key, out);
+  return out;
+}
+
 export const FLUIDS = new Set(['water', 'lava', 'bubble_column']);
 
 // Blocks that need a supporting neighbour (or are multi-block) — placed after all solid blocks.
@@ -59,11 +87,20 @@ export function placementPhase(block) {
 export const isGravityBlock = (block) => GRAVITY_RE.test(blockName(block));
 export const isLeaves = (block) => /_leaves$/.test(blockName(block));
 
-/** Blocks made of two halves: name → { prop, lower, upper } */
-export function twoBlockInfo(block) {
+/** Blocks made of two halves (from the block's states when known): name → { prop, lower, upper, axis } */
+export function twoBlockInfo(block, version = DEFAULT_MC_VERSION) {
   const n = blockName(block);
+  const def = mcData(version)?.blocksByName?.[n];
+  if (def) {
+    const states = def.states ?? [];
+    const half = states.find((s) => s.name === 'half');
+    if (half?.values?.includes('upper') && half.values.includes('lower')) return { prop: 'half', lower: 'lower', upper: 'upper', axis: 'y' };
+    const part = states.find((s) => s.name === 'part');
+    if (part?.values?.includes('head') && part.values.includes('foot')) return { prop: 'part', lower: 'foot', upper: 'head', axis: 'facing' };
+    return null;
+  }
   if (/door$/.test(n) && !/trapdoor$/.test(n)) return { prop: 'half', lower: 'lower', upper: 'upper', axis: 'y' };
-  if (/^(sunflower|lilac|rose_bush|peony|tall_grass|large_fern|tall_seagrass|pitcher_plant|small_dripleaf|tall_dry_grass)$/.test(n)) {
+  if (/^(sunflower|lilac|rose_bush|peony|tall_grass|large_fern|tall_seagrass|pitcher_plant|small_dripleaf)$/.test(n)) {
     return { prop: 'half', lower: 'lower', upper: 'upper', axis: 'y' };
   }
   if (/_bed$/.test(n)) return { prop: 'part', lower: 'foot', upper: 'head', axis: 'facing' };
@@ -87,18 +124,35 @@ function lev(a, b) {
   return dp[n];
 }
 
-/** Closest known block names for a typo. */
+/** Closest known block names for a typo (names containing the word rank first: chain → iron_chain). */
 export function suggestBlocks(name, version = DEFAULT_MC_VERSION, max = 3) {
   const d = mcData(version);
   if (!d) return [];
+  const renamed = renamedFor(name, version);
   const scored = [];
   for (const b of d.blocksArray) {
     let s = lev(name, b.name);
-    if (b.name.includes(name) || name.includes(b.name)) s -= 2;
+    if (b.name.endsWith(`_${name}`) || b.name.startsWith(`${name}_`)) s = Math.min(s, 1) - 1;
+    else if (b.name.includes(name) || name.includes(b.name)) s -= 2;
     scored.push([s, b.name]);
   }
-  scored.sort((a, b) => a[0] - b[0]);
-  return scored.slice(0, max).filter(([s]) => s <= Math.max(3, name.length / 2)).map(([, n]) => n);
+  scored.sort((a, b) => a[0] - b[0] || a[1].length - b[1].length);
+  const out = scored.slice(0, max).filter(([s]) => s <= Math.max(3, name.length / 2)).map(([, n]) => n);
+  return renamed ? [renamed, ...out.filter((n) => n !== renamed)].slice(0, max) : out;
+}
+
+/** Blocks renamed between Minecraft versions: [older name, newer name]. */
+const RENAMES = [['grass_path', 'dirt_path'], ['grass', 'short_grass'], ['chain', 'iron_chain']];
+
+/** The name `name` has in `version` when it was renamed (either direction), else null. */
+export function renamedFor(name, version = DEFAULT_MC_VERSION) {
+  const d = mcData(version);
+  if (!d || d.blocksByName[name]) return null;
+  for (const [older, newer] of RENAMES) {
+    if (name === older && d.blocksByName[newer]) return newer;
+    if (name === newer && d.blocksByName[older]) return older;
+  }
+  return null;
 }
 
 /** Common non-block (item) names agents use by mistake → the block to use instead. */

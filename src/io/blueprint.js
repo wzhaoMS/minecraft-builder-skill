@@ -10,8 +10,8 @@
  * {
  *   "name": "Cottage", "description": "...",
  *   "generator": "house", "params": { ... },                   // start from a generator
- *   "parts": [ { "generator": "tree", "params": {}, "at": [x,y,z], "rotate": 90, "mirror": "x" },
- *              { "file": "other.json", "at": [x,y,z] } ],      // composition
+ *   "parts": [ { "generator": "tree", "params": {}, "at": [x,y,z], "facing": "west" },   // or "rotate": 90, "mirror": "x"
+ *              { "file": "other.json", "at": [x,y,z] } ],      // composition; at = part's NW corner after turning
  *   "palette": { "#": "cobblestone", "P": "oak_planks", ".": null },
  *   "fills":  [ { "from": [0,0,0], "to": [6,0,6], "block": "#", "mode": "hollow" } ],
  *   "layers": [ ["#####", "#...#", "#####"], ... ],            // layers[y][z] = row string, char i = x
@@ -166,7 +166,13 @@ export async function fromJson(data, { baseDir = '.', params = {}, depth = 0, fi
     } else {
       throw new BlueprintError(`${file}: ${where} needs "generator", "file", or inline layers/blocks/fills`);
     }
-    s.paste(sub, at[0], at[1], at[2], { rotate: part.rotate, mirror: part.mirror, skipAir: part.skipAir });
+    // `at` is where the part's north-west footprint corner lands after it is turned; "facing" turns
+    // its front (built facing south) toward north/east/south/west, "rotate" is clockwise degrees
+    try {
+      s.place(sub, at[0], at[1], at[2], { facing: part.facing, rotate: part.rotate, mirror: part.mirror, skipAir: part.skipAir });
+    } catch (e) {
+      throw new BlueprintError(`${file}: ${where}: ${e.message}`);
+    }
   }
 
   // 3. fills

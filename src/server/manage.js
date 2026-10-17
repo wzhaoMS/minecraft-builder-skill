@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { resolvePaper, resolveFawe, download, DEFAULT_MC_VERSION } from './downloads.js';
 import { findJava, installJava, javaInstallHint } from './java.js';
@@ -180,11 +180,33 @@ function pidAlive(pid) {
   }
 }
 
+/**
+ * Is this PID a Java process? true / false / null (couldn't tell). Guards against PID reuse:
+ * after a reboot the PID in the pid file may belong to something else entirely.
+ */
+export function pidIsJava(pid) {
+  try {
+    if (process.platform === 'linux') {
+      return /java/i.test(fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8'));
+    }
+    if (process.platform === 'win32') {
+      const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+      if (!out.includes(`"${pid}"`)) return false;
+      return /"javaw?\.exe"/i.test(out);
+    }
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 10_000 });
+    return out.trim() ? /java/i.test(out) : false;
+  } catch {
+    return null;
+  }
+}
+
 export function readPid(dir) {
   const f = path.join(dir, PID_FILE);
   if (!fs.existsSync(f)) return null;
   const pid = Number(fs.readFileSync(f, 'utf8').trim());
-  return Number.isInteger(pid) && pidAlive(pid) ? pid : null;
+  if (!Number.isInteger(pid) || !pidAlive(pid)) return null;
+  return pidIsJava(pid) === false ? null : pid; // stale pid file, PID reused by another program
 }
 
 /** Server list ping → { version, protocol, players, motd } or null. */
@@ -221,6 +243,13 @@ export async function startServer(o) {
   if (running) {
     log(`server already running (pid ${running})`);
     return { pid: running, port, already: true };
+  }
+  const busy = await pingServer('127.0.0.1', port, 1500);
+  if (busy) {
+    throw Object.assign(new Error(`Port ${port} is already used by another running server (${busy.version ?? 'unknown version'})`), {
+      code: 'PORT_IN_USE',
+      hint: `Build on that server instead (mcb doctor --port ${port}), stop it, or change server-port in ${path.join(dir, 'server.properties')}.`,
+    });
   }
   const state = fs.existsSync(path.join(dir, STATE_FILE)) ? JSON.parse(fs.readFileSync(path.join(dir, STATE_FILE), 'utf8')) : {};
   const java = o.java ?? state.java ?? findJava(21, dir)?.path;
@@ -297,8 +326,12 @@ export async function stopServer(o) {
     const t0 = Date.now();
     while (pidAlive(pid) && Date.now() - t0 < 60_000) await sleep(500);
     if (pidAlive(pid)) {
-      log('server still running after 60 s — terminating process');
-      try { process.kill(pid); } catch { /* ignore */ }
+      if (pidIsJava(pid) === true) {
+        log('server still running after 60 s — terminating process');
+        try { process.kill(pid); } catch { /* ignore */ }
+      } else {
+        log(`process ${pid} is still running but does not look like the server — not killing it`);
+      }
     }
   }
   fs.rmSync(path.join(dir, PID_FILE), { force: true });

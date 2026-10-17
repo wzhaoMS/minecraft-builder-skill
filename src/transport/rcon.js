@@ -28,26 +28,32 @@ export class RconClient {
       this.sock = sock;
       sock.setNoDelay(true);
       const fail = (err) => {
+        clearTimeout(connectTimer);
+        sock.destroy();
         reject(new TransportError(`RCON connection to ${this.host}:${this.port} failed: ${err.message}`, {
           code: err.code ?? 'RCON_CONNECT',
           hint: 'Enable RCON in server.properties (enable-rcon=true, rcon.port, rcon.password) and restart the server.',
         }));
       };
+      const connectTimer = setTimeout(() => fail(Object.assign(new Error('timed out'), { code: 'RCON_TIMEOUT' })), this.timeoutMs);
       sock.once('error', fail);
       sock.on('data', (d) => this._onData(d));
       sock.on('close', () => {
         this.closed = true;
-        for (const [, p] of this.pending) p.reject(new TransportError('RCON connection closed', { code: 'RCON_CLOSED' }));
+        for (const [, p] of this.pending) { clearTimeout(p.timer); clearTimeout(p.flush); p.reject(new TransportError('RCON connection closed', { code: 'RCON_CLOSED' })); }
         this.pending.clear();
       });
       sock.once('connect', async () => {
+        clearTimeout(connectTimer);
         sock.removeListener('error', fail);
         sock.on('error', () => {});
         try {
           const r = await this._request(TYPE_AUTH, this.password ?? '');
-          if (r.id === -1) throw new TransportError('RCON authentication failed (wrong rcon.password)', { code: 'RCON_AUTH' });
+          if (r.id === -1) throw new TransportError('RCON authentication failed (wrong rcon.password)', { code: 'RCON_AUTH', hint: 'Check rcon.password in server.properties.' });
           resolve(this);
         } catch (e) {
+          this.closed = true;
+          sock.destroy();
           reject(e);
         }
       });
@@ -65,7 +71,7 @@ export class RconClient {
       if (id === -1) {
         // auth failure is reported with id -1 → fail the oldest pending auth request
         const first = [...this.pending.entries()][0];
-        if (first) { this.pending.delete(first[0]); first[1].resolve({ id: -1, body }); }
+        if (first) { this.pending.delete(first[0]); clearTimeout(first[1].timer); first[1].resolve({ id: -1, body }); }
         continue;
       }
       const p = this.pending.get(id);
@@ -114,6 +120,8 @@ export class RconClient {
 
   close() {
     try { this.sock?.end(); } catch { /* ignore */ }
+    // don't keep the process alive if the server never answers the FIN
+    setTimeout(() => { try { this.sock?.destroy(); } catch { /* ignore */ } }, 1000).unref();
   }
 }
 

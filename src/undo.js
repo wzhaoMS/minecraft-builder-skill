@@ -11,6 +11,7 @@ import { Structure } from './core/structure.js';
 import { decodeSnapshot, captureRegion, listSnapshots } from './snapshot.js';
 import { executeBuild, blockMatches, BuildError, normalizeDimension, DIMENSIONS } from './build.js';
 import { withGamerules } from './gamerules.js';
+import { normalizeServerKey } from './connect.js';
 
 export function findSnapshot(stateDir, id) {
   const snaps = listSnapshots(stateDir);
@@ -22,21 +23,29 @@ export function findSnapshot(stateDir, id) {
 }
 
 /**
- * @returns {Promise<object>} report: { ok, id, restored, conflicts, conflictExamples, build }
+ * @returns {Promise<object>} report: { ok, id, restored, conflicts, unreadable, conflictExamples, build }
  */
-export async function undoBuild(transport, snapFile, { force = false, log = () => {}, onProgress, stateDir = null } = {}) {
+export async function undoBuild(transport, snapFile, { force = false, anyServer = false, log = () => {}, onProgress, stateDir = null } = {}) {
   const data = decodeSnapshot(fs.readFileSync(snapFile));
   const id = path.basename(snapFile).replace(/\.json\.gz$/, '');
+  const taken = data.meta?.server ? normalizeServerKey(data.meta.server) : null;
+  const here = transport.serverKey ? normalizeServerKey(transport.serverKey) : null;
+  if (taken && here && taken !== here && !anyServer) {
+    throw new BuildError(`Snapshot ${id} was taken on ${taken}, but you are connected to ${here}`, {
+      code: 'SERVER_MISMATCH', hint: 'Connect to the server the build ran on, or pass --any-server if it is the same world under another address.',
+    });
+  }
   const dimension = data.meta?.dimension ? normalizeDimension(data.meta.dimension) : 'overworld';
   transport.setDimension?.(DIMENSIONS[dimension].id);
   const restore = new Structure({ name: `undo ${data.name ?? id}` });
   const conflicts = [];
+  let unreadable = 0;
   if (!data.after) {
     // v1 snapshot: no record of what the build set — restore the whole box.
     data.structure.forEach((x, y, z, b) => restore.set(x, y, z, b));
   } else {
     let current = null;
-    if (transport.canRead) {
+    if (transport.canRead && !force) {
       current = (await withGamerules(transport, { sendCommandFeedback: false }, () => captureRegion(transport, data.box), { journalDir: stateDir })).structure;
     } else if (!force) {
       throw new BuildError('Undo needs the bot transport to check for edits made since the build', {
@@ -46,9 +55,15 @@ export async function undoBuild(transport, snapFile, { force = false, log = () =
     data.after.forEach((x, y, z, after) => {
       const before = data.structure.get(x, y, z);
       if (before == null) return;
-      if (current && !force) {
+      if (blockMatches(after, before, { strict: true })) return; // the build did not change this block
+      if (current) {
         const now = current.get(x, y, z);
-        if (now != null && !blockMatches(after, now) && !blockMatches(before, now, { strict: true })) {
+        if (now == null) {
+          // could not read it: we cannot tell whether someone edited it since, so leave it alone
+          unreadable++;
+          return;
+        }
+        if (!blockMatches(after, now) && !blockMatches(before, now, { strict: true })) {
           conflicts.push({ pos: [x, y, z], expected: after, found: now });
           return;
         }
@@ -63,13 +78,17 @@ export async function undoBuild(transport, snapFile, { force = false, log = () =
       fixMultiblocks: false, dimension, log, onProgress, stateDir,
     });
   }
+  const hints = [];
+  if (conflicts.length) hints.push('Some blocks were changed after the build and were left as they are; re-run with --force to restore them too.');
+  if (unreadable) hints.push('Some blocks could not be read (chunks not loaded) and were left as they are; re-run, or pass --force to restore them without checking.');
   return {
-    ok: (!build || build.ok) && conflicts.length === 0,
+    ok: (!build || build.ok) && conflicts.length === 0 && unreadable === 0,
     id,
     restored: restore.count,
     conflicts: conflicts.length,
+    unreadable,
     conflictExamples: conflicts.slice(0, 10),
-    hint: conflicts.length ? 'These blocks were changed after the build and were left as they are; re-run with --force to restore them too.' : undefined,
+    hint: hints.length ? hints.join(' ') : undefined,
     build,
   };
 }

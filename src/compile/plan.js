@@ -69,6 +69,7 @@ export function planBuild(world, opts = {}) {
     if (op.cmd.length + 1 > MAX_COMMAND_LENGTH) {
       throw new Error(`Command too long (${op.cmd.length + 1} > ${MAX_COMMAND_LENGTH} chars): ${op.cmd.slice(0, 80)}… — shorten the block NBT.`);
     }
+    if (op.volume > maxVolume) throw new Error(`internal: planned a ${op.volume}-block fill above the ${maxVolume} limit`);
   }
   const blocks = ops.filter((o) => o.phase >= 0).reduce((n, o) => n + o.volume, 0);
   return {
@@ -109,10 +110,19 @@ export function splitBox(box, maxVolume = 32768, tile = 64) {
     for (let tz = Math.floor(z1 / tile) * tile; tz <= z2; tz += tile) {
       const ax = Math.max(x1, tx), bx = Math.min(x2, tx + tile - 1);
       const az = Math.max(z1, tz), bz = Math.min(z2, tz + tile - 1);
-      const area = (bx - ax + 1) * (bz - az + 1);
-      const layers = Math.max(1, Math.floor(maxVolume / area));
-      for (let y = y1; y <= y2; y += layers) {
-        out.push({ x1: ax, y1: y, z1: az, x2: bx, y2: Math.min(y2, y + layers - 1), z2: bz });
+      // if even one layer of the tile is too big (small server limits), cut it into strips first
+      const w = bx - ax + 1, d = bz - az + 1;
+      const stripD = w * d <= maxVolume ? d : Math.max(1, Math.floor(maxVolume / w));
+      const stripW = w * Math.min(d, stripD) <= maxVolume ? w : Math.max(1, Math.floor(maxVolume / stripD));
+      for (let sx = ax; sx <= bx; sx += stripW) {
+        for (let sz = az; sz <= bz; sz += stripD) {
+          const ex = Math.min(bx, sx + stripW - 1), ez = Math.min(bz, sz + stripD - 1);
+          const area = (ex - sx + 1) * (ez - sz + 1);
+          const layers = Math.max(1, Math.floor(maxVolume / area));
+          for (let y = y1; y <= y2; y += layers) {
+            out.push({ x1: sx, y1: y, z1: sz, x2: ex, y2: Math.min(y2, y + layers - 1), z2: ez });
+          }
+        }
       }
     }
   }

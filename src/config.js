@@ -55,7 +55,14 @@ export function readConfigFile(file) {
  * @returns {object} resolved config with `_sources` describing where values came from
  */
 export function resolveConfig(flags = {}) {
-  const file = flags.config ? path.resolve(flags.config) : (process.env.MCB_CONFIG || findConfigFile());
+  const explicit = flags.config ? path.resolve(flags.config) : (process.env.MCB_CONFIG || null);
+  if (explicit && !fs.existsSync(explicit)) {
+    // an explicitly chosen config that can't be read must never fall back to another server
+    throw Object.assign(new Error(`Config file not found: ${explicit}`), {
+      code: 'CONFIG_NOT_FOUND', hint: 'Fix the --config path / MCB_CONFIG, or remove it to use mcb.config.json discovery.',
+    });
+  }
+  const file = explicit ?? findConfigFile();
   const fromFile = file && fs.existsSync(file) ? readConfigFile(file) : {};
   const cfg = { ...DEFAULTS };
   const sources = {};

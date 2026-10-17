@@ -13,22 +13,40 @@
 import { canonical, blockName, isAir } from './blockstate.js';
 import { transformBlock, transformPoint, toQuarterTurns } from './transform.js';
 
-const SX = 2 ** 17; // section coordinate offsets (±2M blocks horizontally)
-const SY = 128; //    (±2048 blocks vertically)
+/** Clockwise quarter turns that make a south-facing front face each direction. */
+const FACING_TURNS = { south: 0, west: 1, north: 2, east: 3 };
+
+// Section keys pack (sx, sy, sz) into one exact integer (< 2^53):
+//   sx, sz: 22 bits each → ±2^21 sections = ±33,554,432 blocks (covers the ±30M world border)
+//   sy:      8 bits      → ±128 sections   = ±2048 blocks
+const SX = 2 ** 21;
+const SXR = 2 ** 22;
+const SY = 128;
+export const MAX_XZ = SX * 16 - 1;
+export const MIN_Y = -SY * 16;
+export const MAX_Y = SY * 16 - 1;
 
 function sectionKey(sx, sy, sz) {
-  return ((sx + SX) * 2 ** 18 + (sz + SX)) * 256 + (sy + SY);
+  return ((sx + SX) * SXR + (sz + SX)) * 256 + (sy + SY);
 }
-function unpackKey(key) {
+/** Section key → [sx, sy, sz]. */
+export function unpackSectionKey(key) {
   const sy = (key % 256) - SY;
   const rest = Math.floor(key / 256);
-  const sz = (rest % 2 ** 18) - SX;
-  const sx = Math.floor(rest / 2 ** 18) - SX;
+  const sz = (rest % SXR) - SX;
+  const sx = Math.floor(rest / SXR) - SX;
   return [sx, sy, sz];
 }
+const unpackKey = unpackSectionKey;
 
 function assertInt(v, name) {
   if (!Number.isInteger(v)) throw new TypeError(`${name} must be an integer, got ${v}`);
+}
+
+function assertRange(x, y, z) {
+  if (x < -MAX_XZ - 1 || x > MAX_XZ || z < -MAX_XZ - 1 || z > MAX_XZ || y < MIN_Y || y > MAX_Y) {
+    throw new RangeError(`Coordinates ${x},${y},${z} are outside the supported range (|x|,|z| ≤ ${MAX_XZ}, ${MIN_Y} ≤ y ≤ ${MAX_Y})`);
+  }
 }
 
 export class Structure {
@@ -71,6 +89,11 @@ export class Structure {
   // ───────────────────────── voxels ─────────────────────────
 
   _section(x, y, z, create) {
+    if (x < -MAX_XZ - 1 || x > MAX_XZ || z < -MAX_XZ - 1 || z > MAX_XZ || y < MIN_Y || y > MAX_Y) {
+      // never let an out-of-range coordinate alias into another section
+      if (create) assertRange(x, y, z);
+      return undefined;
+    }
     const key = sectionKey(x >> 4, y >> 4, z >> 4);
     let sec = this._sections.get(key);
     if (!sec && create) {
@@ -323,6 +346,28 @@ export class Structure {
       this.setId(x + dx, y + dy, z + dz, remap[id]);
     });
     return this;
+  }
+
+  /**
+   * Paste `other` turned to face a direction (or rotated/mirrored) with its north-west footprint
+   * corner at (x, y, z) — the way builds are placed. Unlike paste(), which turns around (0,0,0) and
+   * can move the part into negative coordinates.
+   * opts: { facing?: 'south'|'west'|'north'|'east' (where its front, built facing south, should face),
+   *         rotate?: degrees clockwise seen from above, mirror?: 'x'|'z', skipAir?, keep? }
+   */
+  place(other, x = 0, y = 0, z = 0, opts = {}) {
+    let turns = toQuarterTurns(opts.rotate ?? 0);
+    if (opts.facing != null) {
+      const f = FACING_TURNS[String(opts.facing).toLowerCase()];
+      if (f === undefined) throw new Error(`facing must be south, west, north or east, got "${opts.facing}"`);
+      turns = (turns + f) % 4;
+    }
+    const src = turns || opts.mirror ? other.transformed({ rotate: turns, mirror: opts.mirror }) : other;
+    const ob = other.bounds(), sb = src.bounds();
+    if (!sb) return this;
+    // keep the footprint's minimum corner where it was before turning (normally 0,0)
+    const dx = x + (ob.min[0] - sb.min[0]), dz = z + (ob.min[2] - sb.min[2]);
+    return this.paste(src, dx, y, dz, { skipAir: opts.skipAir, keep: opts.keep });
   }
 
   // ───────────────────────── transforms ─────────────────────────

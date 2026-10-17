@@ -29,6 +29,9 @@ export function parseArgs(argv, { booleans = [], optionalNumbers = ['clear'] } =
         else if (optNum.has(k)) val = next !== undefined && /^\d+$/.test(next) ? argv[++i] : true;
         else if (next !== undefined && !next.startsWith('--') && !/^-[a-z]$/i.test(next)) val = argv[++i];
         else val = true;
+      } else if (bool.has(k)) {
+        // --flag=value on a switch: parse strictly (never let "false" mean true)
+        val = parseBool(val, `--${key}`);
       }
       if (k === 'param') out.param.push(String(val));
       else out[k] = val;
@@ -41,6 +44,15 @@ export function parseArgs(argv, { booleans = [], optionalNumbers = ['clear'] } =
 
 export function camel(s) {
   return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+/** Strict boolean: true/false/1/0/yes/no/on/off; anything else is an error. */
+export function parseBool(v, what = 'value') {
+  if (typeof v === 'boolean') return v;
+  const s = String(v).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(s)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(s)) return false;
+  throw Object.assign(new Error(`${what} must be true or false, got "${v}"`), { exitCode: 2, code: 'BAD_FLAG' });
 }
 
 /** "x,y,z" | "x y z" → [x,y,z] integers (allows ~ relative to `base`). */

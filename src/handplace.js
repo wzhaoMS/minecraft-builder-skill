@@ -55,8 +55,16 @@ export async function handPlace(transport, world, { bps = 8, onProgress = () => 
   list.sort((a, b) => a.phase - b.phase || a.y - b.y || a.z - b.z || ((a.z & 1) ? b.x - a.x : a.x - b.x));
 
   // Clear air first with plain commands (not interesting to watch).
+  const errors = [];
   const air = list.filter((v) => v.phase === -1);
-  if (air.length) await transport.run(air.map((v) => `setblock ${v.x} ${v.y} ${v.z} air`), {});
+  if (air.length) {
+    const r = await transport.run(air.map((v) => `setblock ${v.x} ${v.y} ${v.z} air`), {});
+    errors.push(...r.errors);
+  }
+  const setblock = async (v) => {
+    const r = await transport.command(`setblock ${v.x} ${v.y} ${v.z} ${v.block}`, { allowErrors: true });
+    for (const e of r.errors) errors.push({ key: e.key, text: e.text, cmd: `setblock ${v.x} ${v.y} ${v.z} ${v.block}` });
+  };
 
   const stats = { placedByHand: 0, setblock: 0, corrected: 0 };
   const solids = list.filter((v) => v.phase >= 0);
@@ -105,14 +113,14 @@ export async function handPlace(transport, world, { bps = 8, onProgress = () => 
     }
     if (!done) {
       try { bot.swingArm('right'); } catch { /* ignore */ }
-      await transport.command(`setblock ${v.x} ${v.y} ${v.z} ${v.block}`, { allowErrors: true });
+      await setblock(v);
       stats.setblock++;
     } else {
       // fix orientation / state if the hand placement chose differently
       await sleep(30);
       const actual = transport.readBlock(v.x, v.y, v.z);
       if (!blockMatches(v.block, actual, { strict: true })) {
-        await transport.command(`setblock ${v.x} ${v.y} ${v.z} ${v.block}`, { allowErrors: true });
+        await setblock(v);
         stats.corrected++;
       }
     }
@@ -121,8 +129,8 @@ export async function handPlace(transport, world, { bps = 8, onProgress = () => 
     const wait = minDelay - (Date.now() - t0);
     if (wait > 0) await sleep(wait);
   }
-  log(`hand mode: ${stats.placedByHand} placed by hand, ${stats.setblock} via /setblock, ${stats.corrected} corrected`);
-  return stats;
+  log(`hand mode: ${stats.placedByHand} placed by hand, ${stats.setblock} via /setblock, ${stats.corrected} corrected${errors.length ? `, ${errors.length} errors` : ''}`);
+  return { ...stats, errors };
 }
 
 function withTimeout(p, ms) {

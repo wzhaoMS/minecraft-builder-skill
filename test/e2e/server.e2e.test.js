@@ -40,7 +40,11 @@ const tower = () => fromJson({
 before(async () => {
   if (!enabled) return;
   bot = await openTransport({ ...cfg, transport: 'bot' }, { log: () => {} });
-  if (cfg.rconPassword) rcon = await openTransport({ ...cfg, transport: 'rcon' }, { log: () => {} });
+  if (cfg.rconPassword) {
+    rcon = await openTransport({ ...cfg, transport: 'rcon' }, { log: () => {} });
+    // start from a known state even if an earlier, killed run left command feedback muted
+    await rcon.command('gamerule send_command_feedback true', { allowErrors: true });
+  }
 });
 
 after(async () => {
@@ -63,7 +67,7 @@ test('bot build → verify 100% → undo restores the original blocks', { skip: 
   // command echo was muted during the build and restored afterwards
   const g = await getGamerule(bot, 'sendCommandFeedback');
   assert.equal(g.value, before.value);
-  assert.ok(!fs.existsSync(path.join(state, 'gamerules-pending.json')), 'journal removed after restore');
+  assert.ok(!fs.readdirSync(state).some((f) => f.startsWith('gamerules-pending')), 'journal removed after restore');
   // undo (only what the build changed, checking for later edits)
   const snapFile = listSnapshots(state)[0].file;
   const snap = decodeSnapshot(fs.readFileSync(snapFile));
@@ -183,6 +187,25 @@ test('--near places the build in front of a player, facing them', { skip: !enabl
   }
 });
 
+test('the bot still reads player poses and gamerules while send_command_feedback is off', { skip: !enabled || !cfg.rconPassword }, async () => {
+  const alice = await connectBot({ host: cfg.host, port: cfg.port, username: 'E2EAlice', auth: cfg.auth });
+  try {
+    await rcon.command('gamerule send_command_feedback false');
+    await bot.command(`tp E2EAlice 1100 ${Y} 1050 90 0`, { allowErrors: true });
+    await new Promise((r) => setTimeout(r, 400));
+    const p = await bot.playerPose('E2EAlice');
+    assert.equal(Math.floor(p.x), 1100);
+    assert.equal(Math.round(p.yaw), 90);
+    assert.equal(p.dimension, 'minecraft:overworld');
+    const g = await getGamerule(bot, 'sendCommandFeedback');
+    assert.equal(g?.value, 'false');
+    assert.ok((await bot.listPlayers()).includes('E2EAlice'));
+  } finally {
+    await rcon.command('gamerule send_command_feedback true', { allowErrors: true });
+    await alice.close();
+  }
+});
+
 test('a non-op bot gets an actionable NOT_OP error', { skip: !enabled || !cfg.rconPassword }, async () => {
   await rcon.command('deop E2ENoOp', { allowErrors: true });
   const t = await connectBot({ host: cfg.host, port: cfg.port, username: 'E2ENoOp', auth: cfg.auth });
@@ -202,14 +225,17 @@ test('a build survives the bot being kicked mid-way (auto-reconnect)', { skip: !
   const s = new Structure({ name: 'e2e-noise' });
   const blocks = ['stone', 'andesite', 'diorite', 'granite', 'cobblestone'];
   for (let x = 0; x < 24; x++) for (let z = 0; z < 24; z++) for (let y = 0; y < 6; y++) s.set(x, y, z, rng.pick(blocks));
-  const kicker = setTimeout(() => { rcon.command('kick BuilderBot e2e reconnect test', { allowErrors: true }).catch(() => {}); }, 1500);
-  try {
-    const r = await executeBuild({ structure: s, transport: bot, at: [1150, Y, 1000], undo: false, verify: true });
-    assert.ok((r.reconnects ?? 0) >= 1, 'should have reconnected at least once');
-    assert.equal(r.verify.remaining, 0, JSON.stringify(r.verify.examples));
-  } finally {
-    clearTimeout(kicker);
-  }
+  // kick the bot once the build is under way (after the read-only scan)
+  let kicked = false;
+  const onProgress = (p) => {
+    if (kicked || p.stage !== 'build' || !p.done) return;
+    kicked = true;
+    rcon.command('kick BuilderBot e2e reconnect test', { allowErrors: true }).catch(() => {});
+  };
+  const r = await executeBuild({ structure: s, transport: bot, at: [1150, Y, 1000], undo: false, verify: true, noSkip: true, onProgress });
+  assert.ok(kicked, 'the kick was sent mid-build');
+  assert.ok((r.reconnects ?? 0) >= 1, 'should have reconnected at least once');
+  assert.equal(r.verify.remaining, 0, JSON.stringify(r.verify.examples));
 });
 
 test('CLI: mcb build --json prints a machine-readable report', { skip: !enabled }, () => {

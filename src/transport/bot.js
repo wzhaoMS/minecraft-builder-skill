@@ -444,11 +444,29 @@ export class BotTransport {
     return s;
   }
 
-  /** Position, facing and dimension of an online player. */
+  /**
+   * Position, facing and dimension of an online player — read through /tellraw, so it works even
+   * while send_command_feedback is off (which hides ordinary command output from the bot).
+   */
   async playerPose(name) {
+    if (this.isOp === false) this.requireOp();
+    if (/^[A-Za-z0-9_]{1,16}$/.test(name)) {
+      const sel = JSON.stringify(name);
+      const r = await this.query(`tellraw @s ["mcb:pose:",{"entity":${sel},"nbt":"Pos"},"|",{"entity":${sel},"nbt":"Rotation"},"|",{"entity":${sel},"nbt":"Dimension"}]`);
+      const line = r.messages.map((x) => x.text).find((t) => t.startsWith('mcb:pose:'));
+      if (line) {
+        // NBT text components render compact SNBT: [520.5d,-60.0d,560.5d]|[-180.0f,0.0f]|minecraft:overworld
+        const [pos, rot, dim] = line.slice('mcb:pose:'.length).split('|');
+        const m = /\[\s*(-?[\d.E-]+)d,\s*(-?[\d.E-]+)d,\s*(-?[\d.E-]+)d\s*\]/.exec(pos ?? '');
+        if (!m) throw new TransportError(`Player "${name}" not found online.`, { code: 'NO_PLAYER', hint: 'Names are case-sensitive; `mcb where` lists online players.' });
+        const rr = /\[\s*(-?[\d.E-]+)f,\s*(-?[\d.E-]+)f\s*\]/.exec(rot ?? '');
+        const d = /"?((?:[a-z0-9_.-]+:)?[a-z0-9_./-]+)"?/.exec((dim ?? '').trim());
+        return { x: Number(m[1]), y: Number(m[2]), z: Number(m[3]), yaw: rr ? Number(rr[1]) : 0, pitch: rr ? Number(rr[2]) : 0, dimension: d ? d[1] : null };
+      }
+    }
     const pos = await this.query(`data get entity ${name} Pos`);
     if (pos.errors.length || !pos.text) {
-      throw new TransportError(`Player "${name}" not found online.`, { code: 'NO_PLAYER', hint: 'Names are case-sensitive; check `mcb where` (lists online players).' });
+      throw new TransportError(`Player "${name}" not found online.`, { code: 'NO_PLAYER', hint: 'Names are case-sensitive; `mcb where` lists online players.' });
     }
     const m = /\[(-?[\d.E-]+)d, (-?[\d.E-]+)d, (-?[\d.E-]+)d\]/.exec(pos.text);
     const rot = await this.query(`data get entity ${name} Rotation`);
@@ -457,6 +475,24 @@ export class BotTransport {
     const d = /"((?:[a-z0-9_.-]+:)?[a-z0-9_./-]+)"/.exec(dim.text);
     if (!m) throw new TransportError(`Could not parse position of ${name}: ${pos.text}`, { code: 'PARSE' });
     return { x: Number(m[1]), y: Number(m[2]), z: Number(m[3]), yaw: r ? Number(r[1]) : 0, pitch: r ? Number(r[2]) : 0, dimension: d ? d[1] : null };
+  }
+
+  /**
+   * The numeric result of a command (e.g. a gamerule query), read back through command storage
+   * and /tellraw so it does not depend on send_command_feedback. → { ok, value } | { ok: false, errors }
+   */
+  async queryResult(cmd) {
+    const key = `v${this.nonce}`;
+    const r = await this.command(`execute store result storage mcb:query ${key} int 1 run ${cmd}`, { allowErrors: true });
+    if (r.errors.length) return { ok: false, errors: r.errors };
+    const t = await this.query(`tellraw @s ["mcb:val:",{"storage":"mcb:query","nbt":${JSON.stringify(key)}}]`);
+    const m = /mcb:val:(-?\d+)/.exec(t.text);
+    return m ? { ok: true, value: Number(m[1]) } : { ok: false, errors: [] };
+  }
+
+  /** Online player names (from the tab list — no command output needed). */
+  async listPlayers() {
+    return Object.keys(this.bot.players ?? {}).filter((n) => n !== this.bot.username).sort();
   }
 
   async close() {

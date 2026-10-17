@@ -3,7 +3,7 @@
  * objects (doors, beds, tall plants) and support warnings (torches, ladders, gravity blocks…).
  */
 import { parseBlock, formatBlock, blockName, isAir } from './blockstate.js';
-import { validateBlockState, twoBlockInfo, isGravityBlock, DEFAULT_MC_VERSION } from './blockinfo.js';
+import { validateBlockState, twoBlockInfo, isGravityBlock, renamedFor, DEFAULT_MC_VERSION } from './blockinfo.js';
 
 const DIRS = { north: [0, 0, -1], south: [0, 0, 1], east: [1, 0, 0], west: [-1, 0, 0], up: [0, 1, 0], down: [0, -1, 0] };
 const OPP = { north: 'south', south: 'north', east: 'west', west: 'east', up: 'down', down: 'up' };
@@ -25,30 +25,20 @@ export function lintStructure(s, { version = DEFAULT_MC_VERSION, fix = true } = 
   const warnings = new Map();
   const fixes = new Map();
 
-  // 1. validate palette
-  const counts = new Array(s.palette.length).fill(0);
-  const firstPos = new Array(s.palette.length);
-  s.forEach((x, y, z, b, id) => { counts[id]++; if (!firstPos[id]) firstPos[id] = [x, y, z]; });
-  for (let id = 1; id < s.palette.length; id++) {
-    if (!counts[id]) continue;
-    const b = s.palette[id];
-    const r = validateBlockState(parseBlock(b), version);
-    if (!r.ok) errors.push({ block: b, count: counts[id], at: firstPos[id], errors: r.errors, suggestions: r.suggestions });
-  }
-
-  // 2. two-block completion + support checks
+  // 1. two-block completion + support checks
   const bounds = s.bounds();
   const groundY = bounds ? bounds.min[1] : 0;
   const todo = [];
   s.forEach((x, y, z, b) => {
     if (isAir(b)) return;
     const name = blockName(b);
-    const info = twoBlockInfo(b);
+    const info = twoBlockInfo(b, version);
     if (info) todo.push([x, y, z, b, info]);
     else checkSupport(s, x, y, z, b, name, groundY, warnings);
-    if (isGravityBlock(b) && y > groundY) {
+    if (isGravityBlock(b)) {
+      // y < 0 is below the ground surface: an unset cell there is terrain, which holds it up
       const below = s.get(x, y - 1, z);
-      if (below == null || isAir(below)) pushExample(warnings, 'gravity', `Gravity block (${name}) without a block below — it will fall`, [x, y, z]);
+      if (below == null ? y - 1 >= 0 : isAir(below)) pushExample(warnings, 'gravity', `Gravity block (${name}) without a block below — it will fall`, [x, y, z]);
     }
   });
   for (const [x, y, z, b, info] of todo) {
@@ -104,6 +94,32 @@ export function lintStructure(s, { version = DEFAULT_MC_VERSION, fix = true } = 
       }
     }
   }
+  // 2. validate the effective structure (after automatic fixes) against the block registry;
+  //    blocks renamed between versions (chain ↔ iron_chain, …) are translated for the target version
+  for (let id = 1; id < s.palette.length; id++) {
+    const b = s.palette[id];
+    if (b == null) continue;
+    const p = parseBlock(b);
+    const renamed = fix ? renamedFor(p.name, version) : null;
+    if (renamed) {
+      let n = 0, at = null;
+      s.forEach((x, y, z, cur, cid) => { if (cid === id) { n++; at ??= [x, y, z]; } });
+      if (!n) continue;
+      s.replace((cur) => cur === b, formatBlock({ ...p, name: renamed }));
+      const f = { message: `Renamed ${p.name} → ${renamed} (its name in Minecraft ${version})`, count: n, examples: [at] };
+      const prev = fixes.get('rename-' + p.name);
+      if (prev) { prev.count += n; } else fixes.set('rename-' + p.name, f);
+    }
+  }
+  const counts = new Array(s.palette.length).fill(0);
+  const firstPos = new Array(s.palette.length);
+  s.forEach((x, y, z, b, id) => { counts[id]++; if (!firstPos[id]) firstPos[id] = [x, y, z]; });
+  for (let id = 1; id < s.palette.length; id++) {
+    if (!counts[id]) continue;
+    const b = s.palette[id];
+    const r = validateBlockState(parseBlock(b), version);
+    if (!r.ok) errors.push({ block: b, count: counts[id], at: firstPos[id], errors: r.errors, suggestions: r.suggestions });
+  }
   return {
     ok: errors.length === 0,
     errors,
@@ -127,7 +143,7 @@ function checkSupport(s, x, y, z, b, name, groundY, warnings) {
     if (solidAt(s, nx, ny, nz)) return true;
     // Untouched neighbours might be existing terrain, but explicit air never supports.
     const nb = s.get(nx, ny, nz);
-    return nb == null && dir === 'down' && ny === groundY - 1;
+    return nb == null && dir === 'down' && (ny === groundY - 1 || ny < 0);
   };
   let need = null;
   if (/wall_torch$|_wall_sign$|_wall_banner$|^ladder$|wall_hanging_sign$|_wall_fan$|wall_skull$|wall_head$/.test(name)) {

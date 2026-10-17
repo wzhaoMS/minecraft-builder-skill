@@ -76,8 +76,8 @@ export const TOOLS = [
   },
   {
     name: 'mc_undo',
-    description: 'Undo a build (default: the most recent): restores what it changed, leaving blocks edited since alone (force=true restores them too). list=true lists undo snapshots.',
-    inputSchema: { type: 'object', properties: { id: { type: 'string' }, list: { type: 'boolean' }, force: { type: 'boolean' } } },
+    description: 'Undo a build (default: the most recent): restores what it changed, leaving blocks edited since alone (force=true restores them too). list=true lists undo snapshots. Prefer passing the id from the build report.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, list: { type: 'boolean' }, force: { type: 'boolean' }, anyServer: { type: 'boolean', description: 'Allow undoing a snapshot taken on a different server address' } } },
   },
   {
     name: 'mc_where',
@@ -107,13 +107,35 @@ async function loadAny(blueprint, params = {}) {
   return loadBlueprint(s, { params });
 }
 
+/** Tools that talk to the server (serialized); the rest are pure and run concurrently. */
+const USES_SERVER = new Set(['mc_build', 'mc_plan', 'mc_undo', 'mc_where', 'mc_command', 'mc_snapshot']);
+
+/** JSON-RPC 2.0 envelope check → error code or 0. */
+export function invalidEnvelope(msg) {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return -32600;
+  if (msg.jsonrpc !== '2.0' || typeof msg.method !== 'string') return -32600;
+  if ('id' in msg && !(typeof msg.id === 'string' || (typeof msg.id === 'number' && Number.isFinite(msg.id)))) return -32600;
+  if ('params' in msg && (msg.params === null || typeof msg.params !== 'object')) return -32602;
+  return 0;
+}
+
 export function createServer({ flags = {}, log = () => {} } = {}) {
   let transport = null;
+  let connecting = null;
   const cfg = resolveConfig(flags);
+  // one connection, opened once even when several tool calls arrive together
   const getTransport = async () => {
     if (transport && !transport.closed) return transport;
-    transport = await openTransport(cfg, { log });
-    return transport;
+    connecting ??= openTransport(cfg, { log }).then((t) => { transport = t; return t; }).finally(() => { connecting = null; });
+    return connecting;
+  };
+  // tools that use the server run one at a time: two builds (or a build and an undo) interleaving
+  // their commands, gamerule changes and snapshots would corrupt each other
+  let queue = Promise.resolve();
+  const exclusive = (fn) => {
+    const run = queue.then(fn, fn);
+    queue = run.catch(() => {});
+    return run;
   };
 
   const text = (obj) => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] });
@@ -164,21 +186,27 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
     async mc_plan(a) {
       return handlers.mc_build({ ...a, planOnly: true, dryRun: false });
     },
-    async mc_undo({ id, list, force } = {}) {
+    async mc_undo({ id, list, force, anyServer } = {}) {
       const snaps = listSnapshots(stateDir(cfg));
       if (list) return text(snaps.map((s) => ({ id: s.id, time: new Date(s.mtime).toISOString() })));
       const { findSnapshot, undoBuild, markApplied } = await import('../undo.js');
       const snap = findSnapshot(stateDir(cfg), id);
-      const r = await undoBuild(await getTransport(), snap.file, { force: !!force, log, stateDir: stateDir(cfg) });
-      if (!r.build || r.build.ok) markApplied(snap.file);
-      return text({ ok: r.ok, id: r.id, restored: r.restored, conflicts: r.conflicts, conflictExamples: r.conflictExamples, hint: r.hint });
+      const r = await undoBuild(await getTransport(), snap.file, { force: !!force, anyServer: !!anyServer, log, stateDir: stateDir(cfg) });
+      if (r.ok) markApplied(snap.file); // incomplete undos keep their snapshot so they can be retried
+      return text({
+        ok: r.ok, id: r.id, restored: r.restored, conflicts: r.conflicts, unreadable: r.unreadable, conflictExamples: r.conflictExamples,
+        errors: r.build?.errors ?? [], hint: r.hint,
+      });
     },
     async mc_where({ player } = {}) {
       const t = await getTransport();
-      if (!player) return text((await t.query('list')).text);
+      if (!player) {
+        const { onlinePlayers } = await import('../connect.js');
+        return text({ players: await onlinePlayers(t) });
+      }
       const p = await t.playerPose(player);
       const { yawToDir } = await import('../placement.js');
-      return text({ player, block: [Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)], pos: [p.x, p.y, p.z], yaw: p.yaw, facing: yawToDir(p.yaw) });
+      return text({ player, block: [Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)], pos: [p.x, p.y, p.z], yaw: p.yaw, facing: yawToDir(p.yaw), dimension: p.dimension });
     },
     async mc_command({ commands }) {
       const t = await getTransport();
@@ -226,10 +254,14 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
     if (method === 'ping') return {};
     if (method === 'tools/list') return { tools: TOOLS };
     if (method === 'tools/call') {
-      const fn = handlers[params?.name];
-      if (!fn) throw Object.assign(new Error(`Unknown tool ${params?.name}`), { rpcCode: -32602 });
+      const name = params?.name;
+      const fn = typeof name === 'string' && Object.hasOwn(handlers, name) ? handlers[name] : null;
+      if (!fn) throw Object.assign(new Error(`Unknown tool ${name}`), { rpcCode: -32602 });
+      const args = params.arguments ?? {};
+      if (typeof args !== 'object' || Array.isArray(args)) throw Object.assign(new Error('Tool arguments must be an object'), { rpcCode: -32602 });
+      const offline = !USES_SERVER.has(name) || (name === 'mc_build' && args.dryRun) || (name === 'mc_undo' && args.list);
       try {
-        return await fn(params.arguments ?? {});
+        return await (offline ? fn(args) : exclusive(() => fn(args)));
       } catch (e) {
         return { isError: true, content: [{ type: 'text', text: `${e.message}${e.hint ? `\nhint: ${e.hint}` : ''}` }] };
       }
@@ -252,12 +284,22 @@ export async function runStdio(flags = {}) {
   const log = (m) => process.stderr.write(`[mcb-mcp] ${m}\n`);
   const server = createServer({ flags, log });
   const rl = readline.createInterface({ input: process.stdin });
-  const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
+  const send = (obj) => { try { process.stdout.write(JSON.stringify(obj) + '\n'); } catch { /* client went away */ } };
   const pending = new Set();
   rl.on('line', (line) => {
     if (!line.trim()) return;
     let msg;
     try { msg = JSON.parse(line); } catch { send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
+    const bad = invalidEnvelope(msg);
+    if (bad) {
+      // responses (no method) from the client are ignored; malformed requests get an error
+      const isResponse = msg && typeof msg === 'object' && !Array.isArray(msg) && !('method' in msg) && ('result' in msg || 'error' in msg);
+      if (!isResponse) {
+        const id = msg && typeof msg === 'object' && (typeof msg.id === 'string' || typeof msg.id === 'number') ? msg.id : null;
+        send({ jsonrpc: '2.0', id, error: { code: bad, message: bad === -32602 ? 'Invalid params' : 'Invalid Request' } });
+      }
+      return;
+    }
     const p = (async () => {
       try {
         const result = await server.handle(msg);
@@ -265,7 +307,7 @@ export async function runStdio(flags = {}) {
       } catch (e) {
         if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, error: { code: e.rpcCode ?? -32603, message: e.message } });
       }
-    })();
+    })().catch(() => {});
     pending.add(p);
     p.finally(() => pending.delete(p));
   });

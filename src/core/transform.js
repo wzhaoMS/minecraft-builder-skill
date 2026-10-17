@@ -8,6 +8,11 @@
  * When both are given, mirror is applied first, then rotation.
  */
 import { parseBlock, formatBlock } from './blockstate.js';
+import { defaultProps } from './blockinfo.js';
+
+// Properties whose omitted default still has a direction (bare `oak_stairs` faces north), so they
+// must be made explicit before rotating/mirroring.
+const ORIENTATION_KEYS = ['facing', 'axis', 'rotation', 'shape', 'hinge', 'type', 'orientation'];
 
 const HORIZ = ['north', 'east', 'south', 'west'];
 const CW = { north: 'east', east: 'south', south: 'west', west: 'north' };
@@ -91,6 +96,17 @@ export function transformBlock(block, { rotate = 0, mirror = null } = {}) {
   const turns = toQuarterTurns(rotate);
   if (!turns && !mirror) return block;
   const b = parseBlock(block);
+  const defs = defaultProps(b.name);
+  if (defs) {
+    for (const k of ORIENTATION_KEYS) {
+      if (!(k in b.props) && k in defs) {
+        // stair "shape" is recomputed by the game from neighbours; keep it implicit
+        if (k === 'shape' && /_stairs$/.test(b.name)) continue;
+        if (k === 'type' && !/chest$/.test(b.name)) continue; // slabs: top/bottom don't rotate
+        b.props[k] = defs[k];
+      }
+    }
+  }
   const keys = Object.keys(b.props);
   if (!keys.length) return formatBlock(b);
   const dirFn = (d) => rotateDir(mirrorDir(d, mirror), turns);

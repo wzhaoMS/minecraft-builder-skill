@@ -18,6 +18,7 @@ import { planBuild, placementState, tileBounds } from './compile/plan.js';
 import { resolvePlacement } from './placement.js';
 import { captureRegion, saveSnapshot, newSnapshotId } from './snapshot.js';
 import { withGamerules, recoverGamerules, getGamerule } from './gamerules.js';
+import { defaultProps } from './core/blockinfo.js';
 
 export const REPORT_SCHEMA = 'mcb.build-report/1';
 
@@ -48,8 +49,10 @@ const TILE = 64;
 const RECOVERABLE = new Set(['ENDED', 'ACK_TIMEOUT', 'RCON_CLOSED', 'RCON_TIMEOUT']);
 
 // Properties the game recomputes from neighbours or time — compared only in strict mode.
-const DYNAMIC_PROPS = new Set(['north', 'south', 'east', 'west', 'up', 'down', 'distance', 'power', 'powered', 'occupied', 'attached', 'in_wall', 'snowy', 'note', 'triggered', 'enabled', 'has_book', 'has_record', 'lit', 'signal_fire', 'berries', 'age', 'stage', 'level', 'moisture', 'honey_level', 'bottom']);
+const DYNAMIC_PROPS = new Set(['north', 'south', 'east', 'west', 'up', 'down', 'distance', 'power', 'powered', 'occupied', 'attached', 'in_wall', 'snowy', 'note', 'instrument', 'triggered', 'enabled', 'has_book', 'has_record', 'lit', 'signal_fire', 'berries', 'age', 'stage', 'level', 'moisture', 'honey_level', 'bottom', 'drag', 'tilt', 'thickness', 'sculk_sensor_phase', 'dusted']);
 const STAIR_SHAPE_RE = /_stairs$/;
+// Defaults the game may change on its own when the property is left implicit.
+const IMPLICIT_DYNAMIC = (name, k) => DYNAMIC_PROPS.has(k) || (k === 'shape' && /(_stairs|rail)$/.test(name)) || (k === 'type' && /chest$/.test(name));
 
 // Blocks whose contents (items, text, records, bees…) an undo snapshot cannot restore.
 const CONTENT_RE = /(^chest$|^trapped_chest$|^barrel$|shulker_box$|^furnace$|^blast_furnace$|^smoker$|^hopper$|^dispenser$|^dropper$|^brewing_stand$|^lectern$|_sign$|^jukebox$|^chiseled_bookshelf$|^decorated_pot$|^crafter$|^beehive$|^bee_nest$|spawner$|^vault$|command_block$|_shelf$)/;
@@ -68,15 +71,38 @@ for (const c of ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', '
   NATURAL_DECAY[`${c}_concrete_powder`] = [`${c}_concrete`];
 }
 
-/** Does the world block `actual` satisfy the blueprint block `expected`? */
+const parsedCache = new Map();
+function parseCached(b) {
+  let p = parsedCache.get(b);
+  if (!p) {
+    p = parseBlock(b);
+    if (parsedCache.size > 20000) parsedCache.clear();
+    parsedCache.set(b, p);
+  }
+  return p;
+}
+
+/**
+ * Does the world block `actual` satisfy the blueprint block `expected`?
+ * Properties left out of `expected` mean "Minecraft's default" (bare `oak_stairs` is a north-facing
+ * bottom stair), except ones the game may recompute (connections, stair shape, chest pairing…).
+ * Outside strict mode, dynamic properties and natural decay (grass → dirt…) are tolerated.
+ */
 export function blockMatches(expected, actual, { strict = false } = {}) {
   if (actual == null) return false;
   if (isAir(expected)) return isAir(actual);
-  const e = parseBlock(expected), a = parseBlock(actual);
+  const e = parseCached(expected), a = parseCached(actual);
   if (e.name !== a.name) return !strict && (NATURAL_DECAY[e.name]?.includes(a.name) ?? false);
   for (const [k, v] of Object.entries(e.props)) {
     if (!strict && (DYNAMIC_PROPS.has(k) || (k === 'shape' && STAIR_SHAPE_RE.test(e.name)))) continue;
     if (a.props[k] !== undefined && String(a.props[k]) !== String(v)) return false;
+  }
+  const defs = defaultProps(e.name);
+  if (defs) {
+    for (const [k, dv] of Object.entries(defs)) {
+      if (k in e.props || IMPLICIT_DYNAMIC(e.name, k)) continue;
+      if (a.props[k] !== undefined && String(a.props[k]) !== dv) return false;
+    }
   }
   return true;
 }
@@ -88,6 +114,18 @@ function unionBox(a, b) {
 }
 
 const inBox = (box, x, y, z) => !!box && x >= box[0] && x <= box[3] && y >= box[1] && y <= box[4] && z >= box[2] && z <= box[5];
+
+// Grass-like blocks turn into dirt as soon as something solid covers them; when the blueprint
+// itself covers them, dirt there is "already built" (re-placing grass would just decay again).
+const DECAYS_UNDER_COVER = new Set(['grass_block', 'mycelium', 'podzol', 'dirt_path', 'farmland']);
+
+/** `want` at x,y,z (target) is satisfied by world block `cur`, allowing for decay under the build's own blocks. */
+function alreadyThere(want, cur, x, y, z, target) {
+  if (blockMatches(want, cur, { strict: true })) return true;
+  if (!DECAYS_UNDER_COVER.has(blockName(want)) || blockName(cur) !== 'dirt') return false;
+  const above = target?.get(x, y + 1, z);
+  return above != null && !isAir(above);
+}
 
 /**
  * @param {object} o
@@ -122,7 +160,14 @@ export async function executeBuild(o) {
   let pose = null;
   if (!o.at && o.near) {
     pose = await transport.playerPose(o.near);
-    if (!pose) throw new BuildError(`Cannot locate player "${o.near}" with the ${transport.kind} transport`, { code: 'NO_PLAYER', hint: 'Use --at x,y,z instead.' });
+    if (!pose) {
+      throw new BuildError(`Cannot locate player "${o.near}" with the ${transport.kind} transport`, {
+        code: 'NO_PLAYER',
+        hint: transport.kind === 'dry-run'
+          ? 'A dry run does not connect to the server, so it cannot see players: pass --at x,y,z (from `mcb where <player>`), or use `mcb plan --near <player>` for a read-only check against the live world.'
+          : 'Use --at x,y,z instead.',
+      });
+    }
     if (!dimension && pose.dimension) dimension = normalizeDimension(pose.dimension);
   }
   dimension ??= 'overworld';
@@ -201,77 +246,118 @@ export async function executeBuild(o) {
   const target = new Structure({ name: `${structure.name}-after` });
   if (clearBox) target.fill(clearBox[0], clearBox[1], clearBox[2], clearBox[3], clearBox[4], clearBox[5], 'air');
   world.forEach((x, y, z, b) => target.set(x, y, z, placementState(b)));
+  Object.defineProperty(report, 'target', { value: target, enumerable: false });
 
   const errors = [];
   let totalBlocks = 0;
+  // Move the bot into the target dimension first: gamerules are per world on Paper, and the quiet
+  // setting must apply where the commands will run.
+  if (transport.kind === 'bot' && !o.planOnly) {
+    await transport.loadArea({ x1: modBox[0], z1: modBox[2], x2: Math.min(modBox[3], modBox[0] + 63), z2: Math.min(modBox[5], modBox[2] + 63) }, { topY: modBox[4] });
+  }
   // Everything below runs with command echo to operators muted (send_command_feedback=false),
   // restored afterwards — also on Ctrl+C and, via the journal, after a crash.
   await withGamerules(transport, o.quiet === false ? {} : { sendCommandFeedback: false }, async () => {
-    // 4. read-only phase: snapshot, impact, safety checks
+    // 4. read-only phase: snapshot (undo), impact, container guard — nothing has been changed yet
     let snapshot = null;
-    if (transport.canRead && (o.undo !== false || o.planOnly)) {
+    const wantUndo = o.undo !== false && !o.planOnly;
+    if (transport.canRead) {
       const volume = (modBox[3] - modBox[0] + 1) * (modBox[4] - modBox[1] + 1) * (modBox[5] - modBox[2] + 1);
       const maxSnap = o.maxSnapshot ?? 32_000_000;
       if (volume > maxSnap) {
-        throw new BuildError(`Area too large to snapshot for undo (${volume} blocks > ${maxSnap})`, {
-          code: 'SNAPSHOT_TOO_LARGE', hint: 'Split the build into parts, or pass --no-undo to build without an undo snapshot.',
-        });
+        if (wantUndo) {
+          throw new BuildError(`Area too large to snapshot for undo (${volume} blocks > ${maxSnap}) — nothing was changed`, {
+            code: 'SNAPSHOT_TOO_LARGE', hint: 'Split the build into parts, or pass --no-undo to build without an undo snapshot (and without the container check).',
+          });
+        }
+        report.warnings.push(`Area too large to scan (${volume} blocks): no undo snapshot and no container check`);
+      } else {
+        progress({ stage: 'snapshot', done: 0, total: 1 });
+        await settle(transport, 300);
+        const cap = await captureRegion(transport, modBox, { onProgress: (d, n) => progress({ stage: 'snapshot', done: d, total: n }) });
+        if (cap.unknown && !o.planOnly && !o.force) {
+          throw new BuildError(`Could not read ${cap.unknown} blocks of the build area (chunks not loaded) — nothing was changed`, {
+            code: 'SNAPSHOT_INCOMPLETE', hint: 'Retry; check the area is inside the world border. --force builds anyway (no undo for those blocks, no container check there).',
+          });
+        }
+        snapshot = cap.structure;
+        Object.defineProperty(report, 'snapshot', { value: snapshot, enumerable: false });
       }
-      progress({ stage: 'snapshot', done: 0, total: 1 });
-      await settle(transport, 300);
-      const cap = await captureRegion(transport, modBox, { onProgress: (d, n) => progress({ stage: 'snapshot', done: d, total: n }) });
-      if (cap.unknown && !o.planOnly) {
-        throw new BuildError(`Could not read ${cap.unknown} blocks of the build area (chunks not loaded) — nothing was changed`, {
-          code: 'SNAPSHOT_INCOMPLETE', hint: 'Retry; check the area is inside the world border, or pass --no-undo.',
-        });
-      }
-      snapshot = cap.structure;
-      Object.defineProperty(report, 'snapshot', { value: snapshot, enumerable: false });
-      // impact: what existing blocks will be replaced, and are any of them data-holding?
-      const replaced = {};
-      const containers = [];
-      let changes = 0;
-      target.forEach((x, y, z, want) => {
-        const cur = snapshot.get(x, y, z);
-        if (cur == null || blockMatches(want, cur, { strict: true })) return;
-        changes++;
-        if (!isAir(cur)) replaced[blockName(cur)] = (replaced[blockName(cur)] ?? 0) + 1;
-        if (holdsContents(cur)) containers.push({ pos: [x, y, z], block: blockName(cur) });
-      });
-      report.impact = {
-        changes,
-        replacedBlocks: Object.values(replaced).reduce((a, b) => a + b, 0),
-        replaced: Object.fromEntries(Object.entries(replaced).sort((a, b) => b[1] - a[1]).slice(0, 15)),
-        containers: containers.slice(0, 10),
-        containerCount: containers.length,
-      };
-      if (containers.length && !o.force && !o.planOnly) {
-        throw new BuildError(`The build would overwrite ${containers.length} block(s) holding items/text that undo cannot restore (e.g. ${containers.slice(0, 3).map((c) => `${c.block} at ${c.pos.join(',')}`).join('; ')}) — nothing was changed`, {
-          code: 'CONTAINERS_AT_RISK', hint: 'Move the build (--at/--facing), empty those blocks first, or pass --force if they can be destroyed.', details: containers,
-        });
-      }
-      if (o.stateDir && o.undo !== false && o.saveUndo !== false && !o.planOnly) {
-        const id = newSnapshotId(structure.name);
-        const file = saveSnapshot(o.stateDir, {
-          id, name: structure.name, box: modBox, structure: snapshot, after: target,
-          meta: { origin: placement.origin, facing: placement.facing, dimension, server: transport.serverKey ?? null },
-        });
-        report.undo = { available: true, id, file };
-        log(`undo snapshot saved: ${id}`);
-      }
-    } else if (!transport.canRead) {
-      report.undo = { available: false, reason: `the ${transport.kind} transport cannot read blocks (use the bot transport for undo/verify)` };
     } else {
-      report.undo = { available: false, reason: 'disabled (--no-undo)' };
+      report.undo = { available: false, reason: `the ${transport.kind} transport cannot read blocks (use the bot transport for undo/verify)` };
+      report.warnings.push(`No container check or undo snapshot: the ${transport.kind} transport cannot read blocks`);
     }
 
     let ops = plan.ops;
     if (snapshot && !o.noSkip) {
       const before = ops.length;
       // Build ops run after the clear, so judge them against the post-clear state.
-      ops = ops.filter((op) => !opAlreadySatisfied(op, snapshot, op.phase < 0 ? () => false : (x, y, z) => inBox(clearBox, x, y, z)));
+      ops = ops.filter((op) => !opAlreadySatisfied(op, snapshot, op.phase < 0 ? () => false : (x, y, z) => inBox(clearBox, x, y, z), op.phase < 0 ? null : target));
       report.skipped = before - ops.length;
     }
+
+    if (snapshot) {
+      // impact: which existing blocks get replaced — and are any of them data-holding?
+      const replaced = {};
+      const candidates = [];
+      const changed = new Structure({ name: `${structure.name}-changes` });
+      target.forEach((x, y, z, want) => {
+        const cur = snapshot.get(x, y, z);
+        if (cur == null) return;
+        if (holdsContents(cur)) candidates.push([x, y, z, cur]);
+        const cleared = inBox(clearBox, x, y, z) && !isAir(cur);
+        if (!cleared && alreadyThere(want, cur, x, y, z, target)) return;
+        changed.set(x, y, z, want);
+        if (!isAir(cur)) replaced[blockName(cur)] = (replaced[blockName(cur)] ?? 0) + 1;
+      });
+      Object.defineProperty(report, 'changed', { value: changed, enumerable: false });
+      // Any container inside a box that will actually be sent is at risk: /fill and /setblock
+      // rewrite the block entity even when the block itself stays the same, and a clear destroys a
+      // chest even when the blueprint puts a chest back in the same place.
+      const containers = [];
+      if (candidates.length) {
+        const covered = candidates.length * ops.length <= 2e7
+          ? ([x, y, z]) => ops.some((op) => x >= op.x1 && x <= op.x2 && y >= op.y1 && y <= op.y2 && z >= op.z1 && z <= op.z2)
+          : (() => {
+            const want = new Set(candidates.map(([x, y, z]) => `${x},${y},${z}`));
+            const hit = new Set();
+            for (const op of ops) {
+              for (let y = op.y1; y <= op.y2; y++) for (let z = op.z1; z <= op.z2; z++) for (let x = op.x1; x <= op.x2; x++) {
+                const k = `${x},${y},${z}`;
+                if (want.has(k)) hit.add(k);
+              }
+            }
+            return ([x, y, z]) => hit.has(`${x},${y},${z}`);
+          })();
+        for (const c of candidates) if (covered(c)) containers.push({ pos: c.slice(0, 3), block: blockName(c[3]) });
+      }
+      report.impact = {
+        changes: changed.count,
+        replacedBlocks: Object.values(replaced).reduce((a, b) => a + b, 0),
+        replaced: Object.fromEntries(Object.entries(replaced).sort((a, b) => b[1] - a[1]).slice(0, 15)),
+        containers: containers.slice(0, 10),
+        containerCount: containers.length,
+      };
+      if (containers.length && !o.force && !o.planOnly) {
+        throw new BuildError(`The build would destroy ${containers.length} block(s) holding items/text that undo cannot restore (e.g. ${containers.slice(0, 3).map((c) => `${c.block} at ${c.pos.join(',')}`).join('; ')}) — nothing was changed`, {
+          code: 'CONTAINERS_AT_RISK', hint: 'Move the build (--at/--facing), empty those blocks first, or pass --force if they can be destroyed.', details: containers,
+        });
+      }
+      if (o.stateDir && wantUndo && o.saveUndo !== false) {
+        if (!changed.count) {
+          report.undo = { available: false, reason: 'nothing to undo: the area already matches the blueprint' };
+        } else {
+          const id = o.undoId ?? newSnapshotId(structure.name);
+          const file = saveSnapshot(o.stateDir, {
+            id, name: structure.name, box: modBox, structure: snapshot, after: changed,
+            meta: { origin: placement.origin, facing: placement.facing, dimension, server: transport.serverKey ?? null },
+          }, { overwrite: !!o.undoId });
+          report.undo = { available: true, id, file };
+          log(`undo snapshot saved: ${id}`);
+        }
+      }
+    }
+    if (!report.undo) report.undo = { available: false, reason: wantUndo ? 'snapshot not taken' : 'disabled (--no-undo)' };
     if (o.planOnly) {
       report.ok = true;
       report.status = 'planned';
@@ -332,6 +418,8 @@ export async function executeBuild(o) {
     if (hand) {
       const { handPlace } = await import('./handplace.js');
       report.hand = await handPlace(transport, world, { bps: o.bps ?? 8, onProgress: progress, log });
+      errors.push(...(report.hand.errors ?? []));
+      delete report.hand.errors;
       doneCmds = ops.length;
     }
     report.buildMs = Date.now() - tBuild;
@@ -361,13 +449,13 @@ export async function executeBuild(o) {
   return report;
 }
 
-function opAlreadySatisfied(op, snapshot, inClear) {
+function opAlreadySatisfied(op, snapshot, inClear, target) {
   const want = op.block;
   for (let y = op.y1; y <= op.y2; y++) {
     for (let z = op.z1; z <= op.z2; z++) {
       for (let x = op.x1; x <= op.x2; x++) {
         const cur = inClear(x, y, z) ? 'air' : snapshot.get(x, y, z);
-        if (cur == null || !blockMatches(want, cur, { strict: true })) return false;
+        if (cur == null || !alreadyThere(want, cur, x, y, z, target)) return false;
       }
     }
   }
@@ -439,7 +527,10 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
   let { mismatches, unreadable } = await check(all);
   if (mismatches.length) {
     await new Promise((r) => setTimeout(r, 800));
-    ({ mismatches } = await check(mismatches.map((m) => [...m.pos, m.expected]), 'recheck')); // rule out stale reads
+    // re-read the mismatches to rule out stale reads; anything that became unreadable stays unreadable
+    const re = await check(mismatches.map((m) => [...m.pos, m.expected]), 'recheck');
+    mismatches = re.mismatches;
+    unreadable = unreadable.concat(re.unreadable);
   }
   const result = {
     checked: all.length - unreadable.length, matched: all.length - unreadable.length - mismatches.length,
