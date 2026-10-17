@@ -353,10 +353,13 @@ export function buildHouse(s, p, rng) {
     }
   }
 
-  // a little greenery by the front corners
+  // a little greenery by the front corners (on its own patch of grass so it survives on paths/stone)
   if (p.shutters) {
     for (const x of [-1, W]) {
-      if (s.get(x, 0, D) == null && rng.chance(0.9)) plant(s, x, 0, D, rng.pick(['rose_bush', 'lilac', 'peony', 'azalea', 'flowering_azalea']));
+      if (s.get(x, 0, D) == null && rng.chance(0.9)) {
+        if (s.get(x, -1, D) == null) s.set(x, -1, D, 'grass_block');
+        plant(s, x, 0, D, rng.pick(['rose_bush', 'lilac', 'peony', 'azalea', 'flowering_azalea']));
+      }
     }
   }
 

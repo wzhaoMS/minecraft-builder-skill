@@ -11,7 +11,9 @@ You design; `mcb` handles coordinates, block-state rotation, placement order, ra
 loading and server quirks.
 
 Run everything from the repo root: `node bin/mcb.js <command>` (or `npx mcb <command>` after
-`npm install`). Every command accepts `--json` for machine-readable output; errors always come
+`npm install`). From another directory use the absolute path — `node <repo>/bin/mcb.js …` — and
+pass `--config <file>` (the config file and the undo store are looked up from the current
+directory). Every command accepts `--json` for machine-readable output; errors always come
 with a `hint:` line telling you what to do.
 
 ## 1. Get connected (once)
@@ -91,6 +93,12 @@ Safety rails you can rely on (and should not bypass casually): nothing changes u
 is valid and the undo snapshot is complete; builds refuse to overwrite chests, barrels, signs and
 other blocks whose contents undo can't restore (`CONTAINERS_AT_RISK` → move the build or `--force`);
 an interrupted build can simply be re-run.
+
+**Scenes with parts the user may change later** (a village, a street): build the shared ground
+(plaza, paths, fountain) first, then each house/tower as its **own** `build` — each gets its own
+undo id, so "remove that one house" is `undo <its id>` and leaves everything else standing. Lay the
+parts out so they don't overlap; where a later part does overwrite an earlier one, undoing it puts
+the earlier blocks back. For one-shot designs a single blueprint with `parts` is simpler.
 
 ## 3. Coordinates and orientation — get these right
 

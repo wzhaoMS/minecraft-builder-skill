@@ -20,8 +20,9 @@
  */
 import { encodePng } from './png.js';
 import { textBitmap } from './font.js';
-import { blockColor, isOpaqueCube } from './colors.js';
+import { blockColor } from './colors.js';
 import { isAir } from '../core/blockstate.js';
+import { transformBlock, transformPoint } from '../core/transform.js';
 
 // ───────────────────────────── canvas ─────────────────────────────
 
@@ -90,18 +91,44 @@ const shade = (c, f) => [c[0] * f, c[1] * f, c[2] * f];
 
 // ───────────────────────────── voxel collection ─────────────────────────────
 
-/** Non-air voxels (optionally only those at or below `cutY`) with their bounds, or null when none. */
-function collect(structure, cutY = Infinity) {
-  const b = structure.bounds();
-  if (!b) return null;
-  const vox = [];
-  structure.forEach((x, y, z, block) => { if (y <= cutY && !isAir(block)) vox.push([x, y, z, block]); });
-  if (!vox.length) return null;
+/**
+ * Non-air voxels as flat typed arrays (xs, ys, zs, palette ids) with per-palette block info and bounds,
+ * or null when there are none. `cutY` drops voxels above that y; `turns` rotates clockwise by quarter
+ * turns exactly like Structure#transformed (coordinates and block states), without copying the structure.
+ */
+function collect(structure, cutY = Infinity, turns = 0) {
+  if (!structure.bounds()) return null;
+  const blocks = structure.palette.map((b) => (b == null ? null : turns ? transformBlock(b, { rotate: turns }) : b));
+  const skip = Uint8Array.from(blocks, (b) => (b == null || isAir(b) ? 1 : 0));
+  const cap = structure.count;
+  const xs = new Int32Array(cap), ys = new Int32Array(cap), zs = new Int32Array(cap), ids = new Uint16Array(cap);
+  let n = 0;
+  structure.forEach((x, y, z, _block, id) => {
+    if (skip[id] || y > cutY) return;
+    if (turns) [x, y, z] = transformPoint(x, y, z, { rotate: turns });
+    xs[n] = x; ys[n] = y; zs[n] = z; ids[n] = id; n++;
+  });
+  if (!n) return null;
   let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
-  for (const [x, y, z] of vox) {
+  for (let i = 0; i < n; i++) {
+    const x = xs[i], y = ys[i], z = zs[i];
     if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
   }
-  return { vox, min: [x0, y0, z0], max: [x1, y1, z1], size: [x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1] };
+  const info = blocks.map((b, id) => (b == null || skip[id] ? null : blockColor(b)));
+  return { n, xs, ys, zs, ids, info, min: [x0, y0, z0], max: [x1, y1, z1], size: [x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1] };
+}
+
+/** Stable counting sort of voxel indices by an integer key in [0, maxKey] (optionally re-sorting `input`). */
+function countingOrder(n, key, maxKey, input = null) {
+  const counts = new Uint32Array(maxKey + 2);
+  for (let j = 0; j < n; j++) counts[key(input ? input[j] : j) + 1]++;
+  for (let k = 1; k < counts.length; k++) counts[k] += counts[k - 1];
+  const out = new Uint32Array(n);
+  for (let j = 0; j < n; j++) {
+    const i = input ? input[j] : j;
+    out[counts[key(i)]++] = i;
+  }
+  return out;
 }
 
 // ───────────────────────────── shapes ─────────────────────────────
@@ -171,20 +198,55 @@ const OPP = { north: 'south', south: 'north', east: 'west', west: 'east' };
 
 // ───────────────────────────── isometric ─────────────────────────────
 
-function rasterizeQuad(pts) {
-  // pts: 4 [u,v] (float) convex, any winding → list of integer pixel offsets inside + edge flags
-  let umin = Infinity, umax = -Infinity, vmin = Infinity, vmax = -Infinity;
-  for (const [u, v] of pts) { umin = Math.min(umin, u); umax = Math.max(umax, u); vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); }
+/** Point-in-convex-quad test (any winding, edges inclusive) shared by the sprite and ground rasterizers. */
+function quadInside(pts) {
   let area = 0;
   for (let i = 0; i < 4; i++) { const [a, b] = pts[i], [c, d] = pts[(i + 1) % 4]; area += a * d - c * b; }
   const sgn = area >= 0 ? 1 : -1;
-  const inside = (x, y) => {
+  return (x, y) => {
     for (let i = 0; i < 4; i++) {
       const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % 4];
       if (sgn * ((bx - ax) * (y - ay) - (by - ay) * (x - ax)) < -1e-9) return false;
     }
     return true;
   };
+}
+
+/**
+ * Same pixel set as rasterizeQuad (pixel centres inside the quad) delivered as row spans fn(y, x0, x1),
+ * inclusive — O(rows) instead of O(area) memory, for the big ground plane.
+ */
+function quadSpans(pts, fn) {
+  const inside = quadInside(pts);
+  let umin = Infinity, umax = -Infinity, vmin = Infinity, vmax = -Infinity;
+  for (const [u, v] of pts) { umin = Math.min(umin, u); umax = Math.max(umax, u); vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); }
+  const xlo = Math.floor(umin), xhi = Math.ceil(umax) - 1;
+  for (let y = Math.floor(vmin); y < Math.ceil(vmax); y++) {
+    const cy = y + 0.5;
+    // where the row crosses the quad's outline (convex → one contiguous span), then snap with the exact test
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < 4; i++) {
+      const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % 4];
+      if ((cy - ay) * (cy - by) > 0 || ay === by) continue;
+      const x = ax + ((cy - ay) * (bx - ax)) / (by - ay);
+      lo = Math.min(lo, x); hi = Math.max(hi, x);
+    }
+    if (lo > hi) continue;
+    let x0 = Math.max(xlo, Math.ceil(lo - 0.5) - 1), x1 = Math.min(xhi, Math.floor(hi - 0.5) + 1);
+    while (x0 <= x1 && !inside(x0 + 0.5, cy)) x0++;
+    while (x1 >= x0 && !inside(x1 + 0.5, cy)) x1--;
+    if (x0 > x1) continue;
+    while (x0 > xlo && inside(x0 - 0.5, cy)) x0--;
+    while (x1 < xhi && inside(x1 + 1.5, cy)) x1++;
+    fn(y, x0, x1);
+  }
+}
+
+function rasterizeQuad(pts) {
+  // pts: 4 [u,v] (float) convex, any winding → list of integer pixel offsets inside + edge flags
+  let umin = Infinity, umax = -Infinity, vmin = Infinity, vmax = -Infinity;
+  for (const [u, v] of pts) { umin = Math.min(umin, u); umax = Math.max(umax, u); vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); }
+  const inside = quadInside(pts);
   const px = [];
   const set = new Set();
   for (let y = Math.floor(vmin); y < Math.ceil(vmax); y++) {
@@ -218,9 +280,9 @@ function makeSprites(s) {
   };
 }
 
-/** Render the isometric view into a new canvas. `turns` = clockwise quarter turns already applied to the structure (for compass labels). */
-function renderIso(structure, { maxW, maxH, bg, scale, turns = 0, cutY = Infinity, grid = true }) {
-  const c = collect(structure, cutY);
+/** Render the isometric view into a new canvas. `turns` = clockwise quarter turns to view from another corner. */
+function renderIso(structure, { maxW, maxH, bg, scale, turns = 0, cutY = Infinity, grid = true, c: pre = null }) {
+  const c = pre ?? collect(structure, cutY, turns);
   if (!c) return null;
   const [sx, sy, sz] = c.size;
   const margin = 18, top = 60; // extra headroom so the compass rose never covers the build
@@ -235,8 +297,7 @@ function renderIso(structure, { maxW, maxH, bg, scale, turns = 0, cutY = Infinit
 
   // ground plane with a 1-block grid + compass letters
   const g0 = proj(0, 0, 0), g1 = proj(sx, 0, 0), g2 = proj(sx, 0, sz), g3 = proj(0, 0, sz);
-  const ground = rasterizeQuad([g0, g1, g2, g3]);
-  for (let i = 0; i < ground.px.length; i += 2) cv.blend(ground.px[i], ground.px[i + 1], 0, 0, 0, 0.08);
+  quadSpans([g0, g1, g2, g3], (y, x0, x1) => { for (let x = x0; x <= x1; x++) cv.blend(x, y, 0, 0, 0, 0.08); });
   if (grid && s >= 4) {
     for (let i = 0; i <= sx; i++) { const a = proj(i, 0, 0), b = proj(i, 0, sz); cv.line(a[0], a[1], b[0], b[1], [0, 0, 0], i % 10 === 0 ? 0.18 : 0.07); }
     for (let k = 0; k <= sz; k++) { const a = proj(0, 0, k), b = proj(sx, 0, k); cv.line(a[0], a[1], b[0], b[1], [0, 0, 0], k % 10 === 0 ? 0.18 : 0.07); }
@@ -265,36 +326,63 @@ function renderIso(structure, { maxW, maxH, bg, scale, turns = 0, cutY = Infinit
     }
   };
 
-  // occupancy lookup for culling
-  const key = (x, y, z) => `${x},${y},${z}`;
-  const occ = new Map();
-  for (const v of c.vox) occ.set(key(v[0], v[1], v[2]), v[3]);
+  const { n, xs, ys, zs, ids, info } = c;
+  // occupancy (palette ids) for face culling: a dense grid when it fits, a numeric-key map otherwise
+  const plane = sx * sz, vol = plane * sy;
+  const dense = vol <= 64e6 ? new Uint16Array(vol) : null;
+  const sparse = dense ? null : new Map();
+  for (let i = 0; i < n; i++) {
+    const k = ((ys[i] - my) * sz + (zs[i] - mz)) * sx + (xs[i] - mx);
+    if (dense) dense[k] = ids[i]; else sparse.set(k, ids[i]);
+  }
+  const occ = dense ? (k) => dense[k] : (k) => sparse.get(k) ?? 0;
+  const opaque = info.map((inf) => !!inf && inf.shape === 'cube' && inf.a >= 1);
+  // painter's order: far → near (camera at +x,+y,+z): by x+y+z, then y, then collection order
+  const byY = countingOrder(n, (i) => ys[i] - my, sy - 1);
+  const order = countingOrder(n, (i) => (xs[i] - mx) + (ys[i] - my) + (zs[i] - mz), sx + sy + sz - 3, byY);
   const sprites = makeSprites(s);
-  // painter's order: far → near (camera at +x,+y,+z)
-  const order = c.vox.map((v, i) => [(v[0] - mx) + (v[1] - my) + (v[2] - mz), v[1], i]);
-  order.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const outline = s >= 6;
-  for (const [, , i] of order) {
-    const [x, y, z, block] = c.vox[i];
-    const info = blockColor(block);
-    if (info.a <= 0) continue;
-    const X = x - mx, Y = y - my, Z = z - mz;
-    const [ax, ay] = proj(X, Y, Z);
-    const boxes = shapeBoxes(info);
-    const cube = boxes.length === 1 && info.shape === 'cube';
-    for (const box of boxes.sort((p, q) => (p[0] + p[1] + p[2]) - (q[0] + q[1] + q[2]))) {
-      const sp = sprites(box);
-      for (const face of ['south', 'east', 'top']) {
-        if (cube) {
-          const n = face === 'top' ? occ.get(key(x, y + 1, z)) : face === 'east' ? occ.get(key(x + 1, y, z)) : occ.get(key(x, y, z + 1));
-          if (n && (isOpaqueCube(n) || (n === block && info.a < 1))) continue;
-        }
-        const base = face === 'top' ? info.top : shade(info.side, face === 'south' ? 0.82 : 0.64);
+  const FACES = ['south', 'east', 'top'];
+  const prep = new Array(info.length);
+  const prepare = (inf) => {
+    const boxes = shapeBoxes(inf).sort((p, q) => (p[0] + p[1] + p[2]) - (q[0] + q[1] + q[2]));
+    const faces = FACES.map((face) => {
+      const base = face === 'top' ? inf.top : shade(inf.side, face === 'south' ? 0.82 : 0.64);
+      return { face, base, ex: shade(base, 0.82) };
+    });
+    return { a: inf.a, cube: boxes.length === 1 && inf.shape === 'cube', sps: boxes.map(sprites), faces };
+  };
+  const d = cv.data, CW = cv.w, CH = cv.h;
+  for (let j = 0; j < n; j++) {
+    const i = order[j], id = ids[i];
+    const p = prep[id] ?? (prep[id] = prepare(info[id]));
+    const a = p.a;
+    if (a <= 0) continue;
+    const X = xs[i] - mx, Y = ys[i] - my, Z = zs[i] - mz;
+    const ax = Math.round(ox + (X - Z) * s), ay = Math.round(oy + ((X + Z) * s) / 2 - Y * s);
+    let skipS = false, skipE = false, skipT = false;
+    if (p.cube) {
+      const k = (Y * sz + Z) * sx + X;
+      const hidden = (nid) => nid !== 0 && (opaque[nid] || (nid === id && a < 1));
+      skipS = Z + 1 < sz && hidden(occ(k + sx));
+      skipE = X + 1 < sx && hidden(occ(k + 1));
+      skipT = Y + 1 < sy && hidden(occ(k + plane));
+    }
+    for (const sp of p.sps) {
+      for (let f = 0; f < 3; f++) {
+        if (f === 0 ? skipS : f === 1 ? skipE : skipT) continue;
+        const { face, base, ex } = p.faces[f];
         const { px, edge } = sp[face];
-        const ex = shade(base, 0.82);
         for (let k = 0, e = 0; k < px.length; k += 2, e++) {
+          const x = ax + px[k], y = ay + px[k + 1];
+          if (x < 0 || y < 0 || x >= CW || y >= CH) continue;
           const col = outline && edge[e] ? ex : base;
-          cv.blend(Math.round(ax) + px[k], Math.round(ay) + px[k + 1], col[0], col[1], col[2], info.a);
+          const o = (y * CW + x) * 4;
+          if (a >= 1) {
+            d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2];
+          } else {
+            d[o] = d[o] + (col[0] - d[o]) * a; d[o + 1] = d[o + 1] + (col[1] - d[o + 1]) * a; d[o + 2] = d[o + 2] + (col[2] - d[o + 2]) * a;
+          }
         }
       }
     }
@@ -318,8 +406,8 @@ const VIEWS = {
 const mod = (a, n) => ((a % n) + n) % n;
 const ORTHO_MARGINS = { ml: 26, mt: 12, mr: 12, mb: 18 };
 
-function renderOrtho(structure, view, { maxW, maxH, bg, scale, cutY = Infinity, grid = true, plotTint = true }) {
-  const c = collect(structure, cutY);
+function renderOrtho(structure, view, { maxW, maxH, bg, scale, cutY = Infinity, grid = true, plotTint = true, c: pre = null }) {
+  const c = pre ?? collect(structure, cutY);
   if (!c) return null;
   const V = VIEWS[view];
   const gw = V.W(c), gh = V.H(c);
@@ -330,24 +418,48 @@ function renderOrtho(structure, view, { maxW, maxH, bg, scale, cutY = Infinity, 
   const W = gw * cell + ml + mr, H = gh * cell + mt + mb;
   const cv = new Canvas(W, H, bg);
   if (plotTint) cv.rect(ml, mt, gw * cell, gh * cell, [255, 255, 255], 0.55);
-  const depths = c.vox.map((v) => V.depth(v[0], v[1], v[2]));
+  const { n, xs, ys, zs, ids, info } = c;
+  const depths = new Float64Array(n);
   let dmin = Infinity, dmax = -Infinity;
-  for (const d of depths) { if (d < dmin) dmin = d; if (d > dmax) dmax = d; }
-  const order = c.vox.map((v, i) => i).sort((a, b) => depths[a] - depths[b]);
+  for (let i = 0; i < n; i++) {
+    const dd = V.depth(xs[i], ys[i], zs[i]);
+    depths[i] = dd;
+    if (dd < dmin) dmin = dd;
+    if (dd > dmax) dmax = dd;
+  }
+  // back → front: stable counting sort by (integer) depth
+  const order = countingOrder(n, (i) => depths[i] - dmin, dmax - dmin);
   const sc = cell / sub;
-  for (const i of order) {
-    const [x, y, z, block] = c.vox[i];
-    const info = blockColor(block);
-    if (info.a <= 0) continue;
+  const masks = new Array(info.length);
+  const d = cv.data, CW = cv.w, CH = cv.h;
+  for (let j = 0; j < n; j++) {
+    const i = order[j], id = ids[i];
+    const inf = info[id];
+    const a = inf.a;
+    if (a <= 0) continue;
     const t = dmax === dmin ? 1 : (depths[i] - dmin) / (dmax - dmin);
     const f = view === 'top' ? 0.45 + 0.55 * t : 0.55 + 0.45 * t;
-    const col = shade(view === 'top' ? info.top : info.side, f);
-    const u = V.u(x, y, z, c), v = V.v(x, y, z, c);
-    const mask = sub === 4 ? coverage(info, V.cov, V.uDir) : 0xffff;
-    for (let r = 0; r < sub; r++) {
+    const src = view === 'top' ? inf.top : inf.side;
+    const r = src[0] * f, g = src[1] * f, b = src[2] * f;
+    const u = V.u(xs[i], ys[i], zs[i], c), v = V.v(xs[i], ys[i], zs[i], c);
+    if (sub === 1) {
+      // inline cv.rect(ml + u * cell, mt + v * cell, cell, cell, [r, g, b], a)
+      const X0 = Math.max(0, ml + u * cell), Y0 = Math.max(0, mt + v * cell);
+      const X1 = Math.min(CW, ml + u * cell + cell), Y1 = Math.min(CH, mt + v * cell + cell);
+      for (let yy = Y0; yy < Y1; yy++) {
+        for (let xx = X0; xx < X1; xx++) {
+          const o = (yy * CW + xx) * 4;
+          if (a >= 1) { d[o] = r; d[o + 1] = g; d[o + 2] = b; } else { d[o] = d[o] + (r - d[o]) * a; d[o + 1] = d[o + 1] + (g - d[o + 1]) * a; d[o + 2] = d[o + 2] + (b - d[o + 2]) * a; }
+        }
+      }
+      continue;
+    }
+    const mask = masks[id] ?? (masks[id] = coverage(inf, V.cov, V.uDir));
+    const col = [r, g, b];
+    for (let rr = 0; rr < sub; rr++) {
       for (let q = 0; q < sub; q++) {
-        if (sub === 4 && !(mask & (1 << (r * 4 + q)))) continue;
-        cv.rect(ml + u * cell + q * sc, mt + v * cell + r * sc, sc, sc, col, info.a);
+        if (!(mask & (1 << (rr * 4 + q)))) continue;
+        cv.rect(ml + u * cell + q * sc, mt + v * cell + rr * sc, sc, sc, col, a);
       }
     }
   }
@@ -459,8 +571,7 @@ export function renderPreview(structure, opts = {}) {
   let cv;
   if (view in ISO_ROT) {
     const turns = ISO_ROT[view];
-    const s = turns ? structure.transformed({ rotate: turns * 90 }) : structure;
-    const r = renderIso(s, { maxW: maxSize, maxH: maxSize, bg: custom ?? BG_ISO, scale: opts.scale, turns, cutY, grid });
+    const r = renderIso(structure, { maxW: maxSize, maxH: maxSize, bg: custom ?? BG_ISO, scale: opts.scale, turns, cutY, grid });
     cv = r ? r.canvas : emptyImage();
   } else if (view in VIEWS) {
     const r = renderOrtho(structure, view, { maxW: maxSize, maxH: maxSize, bg: custom ?? BG_PANEL, scale: opts.scale, cutY, grid, plotTint: !custom });
@@ -490,7 +601,7 @@ function renderSheet(structure, { maxSize, title, custom = null, cutY = Infinity
   const header = 30;
   const totalW = Math.min(maxSize, 1600);
   const isoMax = Math.round(totalW * 0.64);
-  const iso = renderIso(structure, { maxW: isoMax, maxH: isoMax, bg: custom ?? BG_ISO, cutY, grid });
+  const iso = renderIso(structure, { maxW: isoMax, maxH: isoMax, bg: custom ?? BG_ISO, cutY, grid, c });
   // TOP / SOUTH / EAST share one scale (pixels per block) sized to fill the right-hand column
   const [W0, H0, D0] = c.size;
   const { ml, mt, mr, mb } = ORTHO_MARGINS;
@@ -502,7 +613,7 @@ function renderSheet(structure, { maxSize, title, custom = null, cutY = Infinity
   ))));
   const views = [['top', 'TOP (NORTH UP)'], ['south', 'SOUTH ELEVATION (FRONT)'], ['east', 'EAST ELEVATION']];
   const panels = views.map(([v, cap]) => {
-    const r = renderOrtho(structure, v, { scale: cell, bg: custom ?? BG_PANEL, cutY, grid, plotTint: !custom });
+    const r = renderOrtho(structure, v, { scale: cell, bg: custom ?? BG_PANEL, cutY, grid, plotTint: !custom, c });
     if (v === 'top') compass(r.canvas, 'top');
     return { r, cap };
   });
@@ -515,7 +626,7 @@ function renderSheet(structure, { maxSize, title, custom = null, cutY = Infinity
   cv.rect(0, 0, cv.w, header, [40, 46, 58]);
   const [sx, sy, sz] = full.size;
   cv.text(`${title ?? 'structure'}`, 10, 8, [255, 255, 255], 2);
-  const info = `${sx}×${sy}×${sz} (W×H×D)  ${full.vox.length} BLOCKS  FRONT = SOUTH${cut ? `  CUT ABOVE Y=${cutY}` : ''}`;
+  const info = `${sx}×${sy}×${sz} (W×H×D)  ${full.n} BLOCKS  FRONT = SOUTH${cut ? `  CUT ABOVE Y=${cutY}` : ''}`;
   cv.text(info, cv.w - 10, 11, cut ? [255, 205, 120] : [200, 210, 225], 1, { align: 'right' });
   // iso
   cv.text('ISO VIEW FROM SOUTH-EAST', 8, header + 4, [70, 70, 90]);

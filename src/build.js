@@ -119,11 +119,15 @@ const inBox = (box, x, y, z) => !!box && x >= box[0] && x <= box[3] && y >= box[
 // itself covers them, dirt there is "already built" (re-placing grass would just decay again).
 export const DECAYS_UNDER_COVER = new Set(['grass_block', 'mycelium', 'podzol', 'dirt_path', 'farmland']);
 
-/** `want` at x,y,z (target) is satisfied by world block `cur`, allowing for decay under the build's own blocks. */
-function alreadyThere(want, cur, x, y, z, target) {
+/**
+ * `want` at x,y,z (target) is satisfied by world block `cur`, allowing for decay under cover: the
+ * build's own block above it, or (where the build leaves the block above alone) whatever the world
+ * already has there — another build's house, a player's wall.
+ */
+function alreadyThere(want, cur, x, y, z, target, world) {
   if (blockMatches(want, cur, { strict: true })) return true;
-  if (!DECAYS_UNDER_COVER.has(blockName(want)) || blockName(cur) !== 'dirt') return false;
-  const above = target?.get(x, y + 1, z);
+  if (!DECAYS_UNDER_COVER.has(blockName(want)) || blockName(cur) !== 'dirt' || !target) return false;
+  const above = target.get(x, y + 1, z) ?? world?.get(x, y + 1, z);
   return above != null && !isAir(above);
 }
 
@@ -310,7 +314,7 @@ export async function executeBuild(o) {
         if (cur == null) return;
         if (holdsContents(cur)) candidates.push([x, y, z, cur]);
         const cleared = inBox(clearBox, x, y, z) && !isAir(cur);
-        if (!cleared && alreadyThere(want, cur, x, y, z, target)) return;
+        if (!cleared && alreadyThere(want, cur, x, y, z, target, snapshot)) return;
         changed.set(x, y, z, want);
         if (!isAir(cur)) replaced[blockName(cur)] = (replaced[blockName(cur)] ?? 0) + 1;
       });
@@ -369,7 +373,14 @@ export async function executeBuild(o) {
         }
       }
     }
-    if (!report.undo) report.undo = { available: false, reason: wantUndo ? 'snapshot not taken' : 'disabled (--no-undo)' };
+    if (!report.undo) {
+      report.undo = {
+        available: false,
+        reason: o.planOnly
+          ? (o.undo === false ? 'plan is read-only; the build will run without undo (--no-undo)' : 'plan is read-only; the build will save an undo snapshot')
+          : wantUndo ? 'snapshot not taken' : 'disabled (--no-undo)',
+      };
+    }
     if (o.planOnly) {
       report.ok = true;
       report.status = 'planned';
@@ -467,7 +478,7 @@ function opAlreadySatisfied(op, snapshot, inClear, target) {
     for (let z = op.z1; z <= op.z2; z++) {
       for (let x = op.x1; x <= op.x2; x++) {
         const cur = inClear(x, y, z) ? 'air' : snapshot.get(x, y, z);
-        if (cur == null || !alreadyThere(want, cur, x, y, z, target)) return false;
+        if (cur == null || !alreadyThere(want, cur, x, y, z, target, snapshot)) return false;
       }
     }
   }

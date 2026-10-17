@@ -137,6 +137,41 @@ test('undo also puts back grass that turned to dirt under the build', async () =
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('undo leaves decayed ground alone where something still covers it', async () => {
+  const dir = tmp();
+  const blocks = {};
+  for (let x = 0; x <= 4; x++) for (let z = 0; z <= 4; z++) blocks[`${x},-1,${z}`] = 'grass_block';
+  const sim = new SimTransport({ blocks });
+  const pen = new Structure({ name: 'pen' }).fill(0, 0, 0, 4, 1, 4, 'oak_fence', { mode: 'walls' }); // inside left untouched
+  const r = await executeBuild({ structure: pen, transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet });
+  sim.world.set('2,0,2', 'stone'); // a player builds inside the pen afterwards
+  sim.world.set('2,-1,2', 'dirt');
+  sim.world.set('0,-1,0', 'dirt'); // under a fence corner
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.ok, true, JSON.stringify(u.conflictExamples));
+  assert.equal(sim.get(2, -1, 2), 'dirt', 'still covered by the player block → left as dirt');
+  assert.equal(sim.get(2, 0, 2), 'stone', "the player's block is not the build's: untouched");
+  assert.match(sim.get(0, -1, 0), /^grass_block/, 'uncovered by the undo → grass again');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a rebuild does not count grass/path decay under other blocks as a change', async () => {
+  const sim = new SimTransport({ blocks: { '0,-1,0': 'dirt', '0,0,0': 'stone', '1,-1,0': 'dirt' } });
+  const s = new Structure().set(0, -1, 0, 'dirt_path').set(1, -1, 0, 'dirt_path').set(3, 0, 0, 'lantern');
+  const plan = await executeBuild({ structure: s, transport: sim, at: [0, 0, 0], planOnly: true, ...quiet });
+  assert.equal(plan.impact.changes, 2, 'the covered path cell is not a change');
+  assert.match(plan.undo.reason, /read-only/);
+});
+
+test('house corner flowers get their own patch of grass', () => {
+  for (const seed of [1, 2, 3, 4, 5, 6]) {
+    const s = runGenerator('house', { seed });
+    s.forEach((x, y, z, b) => {
+      if (/\[half=lower\]/.test(b) && /(rose_bush|lilac|peony)/.test(b)) assert.equal(s.get(x, y - 1, z), 'grass_block', `seed ${seed} at ${x},${y},${z}`);
+    });
+  }
+});
+
 test('snapshot ids are unique and never overwrite each other', () => {
   const ids = new Set(Array.from({ length: 200 }, () => newSnapshotId('same name')));
   assert.equal(ids.size, 200);

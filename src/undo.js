@@ -10,7 +10,7 @@ import path from 'node:path';
 import { Structure } from './core/structure.js';
 import { decodeSnapshot, captureRegion, listSnapshots } from './snapshot.js';
 import { executeBuild, blockMatches, BuildError, normalizeDimension, DIMENSIONS, DECAYS_UNDER_COVER } from './build.js';
-import { blockName } from './core/blockstate.js';
+import { blockName, isAir } from './core/blockstate.js';
 import { withGamerules } from './gamerules.js';
 import { normalizeServerKey } from './connect.js';
 
@@ -39,6 +39,7 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
   const dimension = data.meta?.dimension ? normalizeDimension(data.meta.dimension) : 'overworld';
   transport.setDimension?.(DIMENSIONS[dimension].id);
   const restore = new Structure({ name: `undo ${data.name ?? id}` });
+  const ground = new Structure({ name: `undo ${data.name ?? id} (ground)` });
   const conflicts = [];
   let unreadable = 0;
   if (!data.after) {
@@ -71,7 +72,8 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
       }
       restore.set(x, y, z, before);
     });
-    // grass under the build turned into dirt while covered: put the original ground back
+    // grass/paths under the build turned into dirt while covered: put the original ground back
+    // where the undo uncovers it (a second pass, once the blocks above are gone)
     if (current && data.meta?.groundLayer) {
       const [x1, gy, z1, x2, , z2] = data.box;
       for (let x = x1; x <= x2; x++) {
@@ -79,30 +81,34 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
           if (data.after.get(x, gy, z) != null) continue;
           const before = data.structure.get(x, gy, z);
           const now = current.get(x, gy, z);
-          if (before && now && DECAYS_UNDER_COVER.has(blockName(before)) && blockName(now) === 'dirt') restore.set(x, gy, z, before);
+          const above = restore.get(x, gy + 1, z) ?? current.get(x, gy + 1, z);
+          if (before && now && DECAYS_UNDER_COVER.has(blockName(before)) && blockName(now) === 'dirt' && (above == null || isAir(above))) {
+            ground.set(x, gy, z, before);
+          }
         }
       }
     }
   }
-  let build = null;
-  if (restore.count) {
-    build = await executeBuild({
-      structure: restore, transport, at: [0, 0, 0], anchor: 'origin', strict: true, undo: false, force: true,
-      fixMultiblocks: false, dimension, log, onProgress, stateDir,
-    });
-  }
+  const run = (structure) => executeBuild({
+    structure, transport, at: [0, 0, 0], anchor: 'origin', strict: true, undo: false, force: true,
+    fixMultiblocks: false, dimension, log, onProgress, stateDir,
+  });
+  let build = null, groundBuild = null;
+  if (restore.count) build = await run(restore);
+  if (ground.count) groundBuild = await run(ground);
   const hints = [];
   if (conflicts.length) hints.push('Some blocks were changed after the build and were left as they are; re-run with --force to restore them too.');
   if (unreadable) hints.push('Some blocks could not be read (chunks not loaded) and were left as they are; re-run, or pass --force to restore them without checking.');
   return {
-    ok: (!build || build.ok) && conflicts.length === 0 && unreadable === 0,
+    ok: (!build || build.ok) && (!groundBuild || groundBuild.ok) && conflicts.length === 0 && unreadable === 0,
     id,
-    restored: restore.count,
+    restored: restore.count + ground.count,
     conflicts: conflicts.length,
     unreadable,
     conflictExamples: conflicts.slice(0, 10),
     hint: hints.length ? hints.join(' ') : undefined,
     build,
+    ...(groundBuild ? { ground: { restored: ground.count, ok: groundBuild.ok } } : {}),
   };
 }
 
