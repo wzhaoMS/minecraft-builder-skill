@@ -217,14 +217,14 @@ function renderIso(structure, { maxW, maxH, bg, scale, turns = 0 }) {
   const c = collect(structure);
   if (!c) return null;
   const [sx, sy, sz] = c.size;
-  const margin = 18;
-  let s = scale ?? Math.floor(Math.min((maxW - 2 * margin) / (sx + sz), (maxH - 2 * margin) / ((sx + sz) / 2 + sy)));
+  const margin = 18, top = 60; // extra headroom so the compass rose never covers the build
+  let s = scale ?? Math.floor(Math.min((maxW - 2 * margin) / (sx + sz), (maxH - margin - top) / ((sx + sz) / 2 + sy)));
   s = Math.max(1, Math.min(32, s));
   if (s > 2 && s % 2) s -= 1;
-  const W = (sx + sz) * s + 2 * margin, H = Math.ceil(((sx + sz) * s) / 2 + sy * s) + 2 * margin;
+  const W = (sx + sz) * s + 2 * margin, H = Math.ceil(((sx + sz) * s) / 2 + sy * s) + margin + top;
   const cv = new Canvas(W, H, bg);
   const [mx, my, mz] = c.min;
-  const ox = sz * s + margin, oy = sy * s + margin;
+  const ox = sz * s + margin, oy = sy * s + top;
   const proj = (X, Y, Z) => [ox + (X - Z) * s, oy + ((X + Z) * s) / 2 - Y * s];
 
   // ground plane with a 1-block grid + compass letters
