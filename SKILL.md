@@ -137,6 +137,7 @@ Full spec: [docs/blueprint-format.md](docs/blueprint-format.md).
 | `tree` | landscaping | `type=oak\|birch\|spruce\|jungle\|acacia\|dark_oak\|cherry\|pale_oak\|mangrove\|azalea height=0 (auto)` |
 | `road` / `bridge` | infrastructure | road: `length=32 width=7 axis=x\|z lamps=12`; bridge: `length=24 style=arch\|beam\|suspension` |
 | `fountain` / `arch` / `wall` | plazas, gates, walls | `radius=4`; `width=9 height=8`; `width=10 height=5 crenellations` |
+| `lighthouse` `windmill` `obelisk` `lamppost` `bench` | landmarks, street furniture | see `mcb generators <name>` |
 | `text` | signs, logos, labels | `text=HELLO block=gold_block font=5x7\|3x5 scale=1 facing=south plane=vertical\|flat background` |
 | `pixelart` | images → blocks | `image=<png/jpg> width=64 palette=concrete\|wool\|terracotta\|concrete+wool\|full dither plane` |
 | `sphere` `dome` `cylinder` `cone` `pyramid` `box` | primitives | `radius`, `height`, `material`, `hollow` |

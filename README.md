@@ -94,7 +94,7 @@ mcb export gen:house --datapack "%APPDATA%/.minecraft/saves/MyWorld/datapacks" -
 | | | |
 |---|---|---|
 | <img src="docs/media/cottage.png" width="260"><br>`examples/blueprints/cottage.json` | <img src="docs/media/watchtower.png" width="260"><br>`examples/blueprints/watchtower.mjs` | <img src="docs/media/city.png" width="260"><br>`gen:city` |
-| <img src="docs/media/gt-campus.png" width="260"><br>`examples/scenes/gt-campus.mjs` (ported from v1) | <img src="docs/media/skyscraper.png" width="260"><br>`gen:skyscraper -p style=setback` | <img src="docs/media/tech-tower-demo.gif" width="260"><br>v1 demo: the bot placing TECH by hand |
+| <img src="docs/media/gt-campus.png" width="260"><br>`examples/scenes/gt-campus.mjs` (ported from v1) | <img src="docs/media/windmill.png" width="260"><br>`gen:windmill` | <img src="docs/media/tech-tower-demo.gif" width="260"><br>v1 demo: the bot placing TECH by hand |
 
 ## How it works
 
