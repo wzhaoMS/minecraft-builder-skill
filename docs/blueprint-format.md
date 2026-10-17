@@ -167,17 +167,28 @@ import { gableRoof, door } from '../../src/generators/helpers.js';
 
 * **Sponge `.schem`** (WorldEdit / FAWE, v1–v3) — read and write.
 * **Vanilla structure `.nbt`** (structure blocks, `/place template`) — read and write.
-* **Litematica `.litematic`** — read (all regions merged).
-* **MCEdit `.schematic`** (pre-1.13) — read.
+* **Litematica `.litematic`** — read and write (all regions merged on read).
+* **MCEdit `.schematic`** (pre-1.13) — read. Blocks renamed since the file's version
+  (`grass` → `short_grass`, `chain` → `iron_chain`, …) are upgraded on import.
 
-Air inside imported files is treated as "untouched" by default so pasting doesn't carve holes into
-terrain; use `mcb build --clear` if you want the area emptied first.
+Air: `.schem` / `.litematic` / `.schematic` have no "leave untouched" marker, so their air is
+dropped on import (like `//paste -a`) and pasting never carves holes into terrain — use
+`mcb build --clear` to empty the area first. `.nbt` files mark untouched cells with
+`structure_void`, so their air is deliberate and is kept (exactly what the game's structure blocks do).
 
 ## Exports
 
 ```bash
 mcb export my.json -o my.schem                   # WorldEdit / FAWE: //schem load my
 mcb export my.json -o my.nbt                     # structure block / /place template
+mcb export my.json -o my.litematic               # Litematica
+mcb export my.json -o my.mcfunction --at 0,64,0  # one function file (small builds)
 mcb export my.json --datapack ./out --name tower # single-player: no bot or server needed
 mcb export my.json -o my.png                     # preview image
 ```
+
+The data pack builds in steps across ticks (so huge builds don't hit the command-chain limit),
+force-loads only the chunks it needs (and only removes forceloads it added), and can be stopped
+with `/function mcb:<name>/cancel`. Copy the generated folder into `saves/<World>/datapacks/`,
+`/reload`, stand where the north-west bottom corner should go, and run `/function mcb:<name>`
+(or pass `--at x,y,z` for fixed coordinates). Data pack format: 1.21.1 – 1.21.11.
