@@ -55,12 +55,25 @@ const STAIR_SHAPE_RE = /_stairs$/;
 const CONTENT_RE = /(^chest$|^trapped_chest$|^barrel$|shulker_box$|^furnace$|^blast_furnace$|^smoker$|^hopper$|^dispenser$|^dropper$|^brewing_stand$|^lectern$|_sign$|^jukebox$|^chiseled_bookshelf$|^decorated_pot$|^crafter$|^beehive$|^bee_nest$|spawner$|^vault$|command_block$|_shelf$)/;
 export const holdsContents = (block) => block != null && CONTENT_RE.test(blockName(block));
 
+/**
+ * Blocks the game legitimately turns into something else shortly after placement (random ticks,
+ * neighbour updates). Outside strict mode these count as a match instead of being "repaired" in a
+ * loop that fights the game.
+ */
+const NATURAL_DECAY = {
+  grass_block: ['dirt'], mycelium: ['dirt'], podzol: ['dirt'], farmland: ['dirt'], dirt_path: ['dirt'],
+  ice: ['water'], frosted_ice: ['water'], snow: ['air'], fire: ['air'], soul_fire: ['air'],
+};
+for (const c of ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'light_gray', 'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black']) {
+  NATURAL_DECAY[`${c}_concrete_powder`] = [`${c}_concrete`];
+}
+
 /** Does the world block `actual` satisfy the blueprint block `expected`? */
 export function blockMatches(expected, actual, { strict = false } = {}) {
   if (actual == null) return false;
   if (isAir(expected)) return isAir(actual);
   const e = parseBlock(expected), a = parseBlock(actual);
-  if (e.name !== a.name) return false;
+  if (e.name !== a.name) return !strict && (NATURAL_DECAY[e.name]?.includes(a.name) ?? false);
   for (const [k, v] of Object.entries(e.props)) {
     if (!strict && (DYNAMIC_PROPS.has(k) || (k === 'shape' && STAIR_SHAPE_RE.test(e.name)))) continue;
     if (a.props[k] !== undefined && String(a.props[k]) !== String(v)) return false;
@@ -198,7 +211,7 @@ export async function executeBuild(o) {
     let snapshot = null;
     if (transport.canRead && (o.undo !== false || o.planOnly)) {
       const volume = (modBox[3] - modBox[0] + 1) * (modBox[4] - modBox[1] + 1) * (modBox[5] - modBox[2] + 1);
-      const maxSnap = o.maxSnapshot ?? 8_000_000;
+      const maxSnap = o.maxSnapshot ?? 32_000_000;
       if (volume > maxSnap) {
         throw new BuildError(`Area too large to snapshot for undo (${volume} blocks > ${maxSnap})`, {
           code: 'SNAPSHOT_TOO_LARGE', hint: 'Split the build into parts, or pass --no-undo to build without an undo snapshot.',
@@ -280,7 +293,7 @@ export async function executeBuild(o) {
     const runGroup = async (g) => {
       const tb = tileBounds(g.tile, TILE);
       const area = { x1: Math.max(tb.x1, modBox[0]), z1: Math.max(tb.z1, modBox[2]), x2: Math.min(tb.x2, modBox[3]), z2: Math.min(tb.z2, modBox[5]) };
-      const topY = Math.max(...g.ops.map((op) => op.y2));
+      const topY = g.ops.reduce((m, op) => (op.y2 > m ? op.y2 : m), -Infinity);
       const ensureLoaded = () => transport.loadArea(area, { topY });
       await ensureLoaded();
       const vols = g.ops.map((op) => op.volume);
@@ -388,19 +401,25 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
   // Block-change packets are flushed at the end of a server tick, after the command feedback that
   // acknowledged them — give the client a moment so we don't read stale blocks.
   await settle(transport, 400);
-  const check = async (positions) => {
-    const mismatches = [];
-    const unreadable = [];
+  const T = transport.readTileSize ?? TILE;
+  const tileKeyOf = (x, z) => `${Math.floor(x / T)},${Math.floor(z / T)}`;
+  const groupByTile = (positions) => {
     const byTile = new Map();
     for (const p of positions) {
-      const k = `${Math.floor(p[0] / TILE)},${Math.floor(p[2] / TILE)}`;
+      const k = tileKeyOf(p[0], p[2]);
       if (!byTile.has(k)) byTile.set(k, []);
       byTile.get(k).push(p);
     }
+    return byTile;
+  };
+  const check = async (positions, stage = 'verify') => {
+    const mismatches = [];
+    const unreadable = [];
+    const byTile = groupByTile(positions);
     let i = 0;
     for (const [k, list] of byTile) {
-      const tb = tileBounds(k, TILE);
-      const topY = Math.max(...list.map((p) => p[1]));
+      const tb = tileBounds(k, T);
+      const topY = list.reduce((m, p) => (p[1] > m ? p[1] : m), -Infinity);
       await transport.loadArea(tb, { topY });
       for (const [x, y, z, expected] of list) {
         let actual = transport.readBlock(x, y, z);
@@ -411,7 +430,7 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
         if (actual === undefined) unreadable.push({ pos: [x, y, z], expected });
         else if (!blockMatches(expected, actual, { strict })) mismatches.push({ pos: [x, y, z], expected, actual });
       }
-      progress({ stage: 'verify', done: ++i, total: byTile.size });
+      progress({ stage, done: ++i, total: byTile.size });
     }
     return { mismatches, unreadable };
   };
@@ -420,7 +439,7 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
   let { mismatches, unreadable } = await check(all);
   if (mismatches.length) {
     await new Promise((r) => setTimeout(r, 800));
-    ({ mismatches } = await check(mismatches.map((m) => [...m.pos, m.expected]))); // rule out stale reads
+    ({ mismatches } = await check(mismatches.map((m) => [...m.pos, m.expected]), 'recheck')); // rule out stale reads
   }
   const result = {
     checked: all.length - unreadable.length, matched: all.length - unreadable.length - mismatches.length,
@@ -430,15 +449,25 @@ export async function verifyAndRepair(transport, world, { repair = true, strict 
   if (repair && mismatches.length) {
     log(`verify: ${mismatches.length} mismatching blocks — repairing`);
     const late = (b) => Number(/torch|door|bed|sign|banner|lantern|rail|carpet|button|lever|ladder|vine/.test(blockName(b)));
-    mismatches.sort((a, b) => late(a.expected) - late(b.expected) || a.pos[1] - b.pos[1]);
-    await transport.run(mismatches.map((m) => `setblock ${m.pos[0]} ${m.pos[1]} ${m.pos[2]} ${m.expected}`), {});
+    const repairErrors = [];
+    // Repair tile by tile: the bot must be near a position for the server to have it loaded.
+    for (const [k, list] of groupByTile(mismatches.map((m) => [...m.pos, m.expected]))) {
+      list.sort((a, b) => late(a[3]) - late(b[3]) || a[1] - b[1]);
+      const tb = tileBounds(k, T);
+      const topY = list.reduce((m, p) => (p[1] > m ? p[1] : m), -Infinity);
+      const ensureLoaded = () => transport.loadArea(tb, { topY });
+      await ensureLoaded();
+      const r = await transport.run(list.map(([x, y, z, b]) => `setblock ${x} ${y} ${z} ${b}`), { ensureLoaded });
+      repairErrors.push(...r.errors);
+    }
     await settle(transport, 600);
-    const again = await check(mismatches.map((m) => [...m.pos, m.expected]));
+    const again = await check(mismatches.map((m) => [...m.pos, m.expected]), 'recheck');
     result.repaired = mismatches.length - again.mismatches.length - again.unreadable.length;
     result.remaining = again.mismatches.length;
     result.unreadable += again.unreadable.length;
     result.matched += result.repaired;
     result.examples = again.mismatches.slice(0, 10);
+    if (repairErrors.length) result.repairErrors = summarizeErrors(repairErrors);
   }
   return result;
 }

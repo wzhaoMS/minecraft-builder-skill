@@ -46,7 +46,7 @@ const FACES = [
 export async function handPlace(transport, world, { bps = 8, onProgress = () => {}, log = () => {} } = {}) {
   if (transport.kind !== 'bot') throw new Error('Hand mode needs the bot transport');
   const bot = transport.bot;
-  const { Vec3 } = require('vec3');
+  const V = require('vec3').Vec3;
   const mcData = require('minecraft-data')(bot.version);
   const Item = require('prismarine-item')(bot.version);
 
@@ -68,7 +68,7 @@ export async function handPlace(transport, world, { bps = 8, onProgress = () => 
   for (let i = 0; i < solids.length; i++) {
     const t0 = Date.now();
     const v = solids[i];
-    const target = new Vec3(v.x, v.y, v.z);
+    const target = new V(v.x, v.y, v.z);
     const name = blockName(v.block);
     const areaKey = `${Math.floor(v.x / 64)},${Math.floor(v.z / 64)}`;
     if (areaKey !== lastArea) {
@@ -82,11 +82,11 @@ export async function handPlace(transport, world, { bps = 8, onProgress = () => 
       let ref = null, face = null;
       for (const [dx, dy, dz] of FACES) {
         const nb = bot.blockAt(target.offset(dx, dy, dz));
-        if (nb && nb.boundingBox === 'block' && !isAir(nb.name)) { ref = nb; face = new Vec3(-dx, -dy, -dz); break; }
+        if (nb && nb.boundingBox === 'block' && !isAir(nb.name)) { ref = nb; face = new V(-dx, -dy, -dz); break; }
       }
       if (ref) {
         try {
-          const hover = new Vec3(v.x + 0.5, v.y + 2, v.z + 0.5);
+          const hover = new V(v.x + 0.5, v.y + 2, v.z + 0.5);
           if (bot.entity.position.distanceTo(hover) > 12) await transport.command(`tp @s ${hover.x} ${hover.y} ${hover.z}`, { allowErrors: true });
           else await withTimeout(bot.creative.flyTo(hover), 3000).catch(() => {});
           if (held !== item) {

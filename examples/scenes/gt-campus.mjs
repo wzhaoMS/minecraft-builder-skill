@@ -23,9 +23,11 @@
  *   - Passes 4 and 5 look at the city (parking lots, billboards, rooftops, lit windows, alleys, …), so the whole pipeline
  *     always runs. With `city: false` only the campus square (x, z in 0..400) of the result is kept: the campus is the
  *     same with or without the city, and nothing is left floating around it.
- *   - Blocks are validated for Minecraft 1.21.11: `chain` is `iron_chain` since 1.21.9. Two real problems that `mcb info`
+ *   - Blocks are validated for Minecraft 1.21.11: `chain` is `iron_chain` since 1.21.9. Three real problems that `mcb info`
  *     pointed out are fixed as well: lanterns under a ceiling (shop lights, subway tunnel, hotel lobby) are `hanging=true`
- *     instead of floating, and the MARTA rails sit on top of the platform deck instead of replacing a row of it.
+ *     instead of floating, the MARTA rails sit on top of the platform deck instead of replacing a row of it, and the
+ *     park's sand and gravel get a floor (they would fall, e.g. into the hole `mcb build --clear` leaves below the ground).
+ *   - The original tested the absolute world x once (fire hydrants, `x % 45`); `+ 359` keeps them where the author had them.
  */
 
 // Ground surface and campus origin (legacy: oy = -62, campusX = 359, campusZ = -536)
@@ -44,9 +46,8 @@ function shims(world) {
 
 /** Copy the campus square (x, z in 0..CW × 0..CD, any y) of `src` into `dst`. */
 function copyCampusSquare(src, dst) {
-  const ids = [];
-  src.forEach((x, y, z, b, id) => {
-    if (x >= campusX && x <= campusX + CW && z >= campusZ && z <= campusZ + CD) dst.setId(x, y, z, (ids[id] ??= dst.idOf(b)));
+  src.forEach((x, y, z, b) => {
+    if (x >= campusX && x <= campusX + CW && z >= campusZ && z <= campusZ + CD) dst.set(x, y, z, b);
   });
 }
 
@@ -363,7 +364,6 @@ function cityPass(world) {
     bldgCount++;
   }
 
-
   // ── Highway ring ──
   const hwyY = oy + 12, hwyW = 6;
   const hx1 = cityX1 - 10, hz1 = cityZ1 - 10, hx2 = cityX2 + 10, hz2 = cityZ2 + 10;
@@ -414,7 +414,6 @@ function landmarksPass(world) {
   const { fill } = shims(world);
 
   const Y = oy + 1; // building base
-
 
   // ═══════════════════════════════════════════════════
   // TECH TOWER — The Lettie Pate Whitehead Evans Admin Building
@@ -563,7 +562,6 @@ function landmarksPass(world) {
   fill(ecx-4, Y+1, ttz-6, ecx+4, Y+2, ttz-6, 'stone_bricks');
   fill(ecx-3, Y+1, ttz-6, ecx+3, Y+1, ttz-6, 'gold_block');
 
-
   // ═══════════════════════════════════════════════════
   // CROSLAND TOWER (Library) — Brutalist concrete tower
   // Real: Tall, narrow, concrete brutalist, distinctive rectangular shape
@@ -610,7 +608,6 @@ function landmarksPass(world) {
     fill(x, Y+2, clz+clD+12, x+1, Y+6, clz+clD+12, 'light_blue_stained_glass');
   }
 
-
   // ═══════════════════════════════════════════════════
   // CULC — Modern glass and steel, cantilever design
   // Real: Glass curtain wall, angular modern architecture
@@ -649,7 +646,6 @@ function landmarksPass(world) {
   // Staircase atrium (glass box on top)
   fill(ulx+13, Y+19, ulz+7, ulx+19, Y+22, ulz+13, 'glass');
   fill(ulx+14, Y+19, ulz+8, ulx+18, Y+21, ulz+12, 'air');
-
 
   // ═══════════════════════════════════════════════════
   // BOBBY DODD STADIUM — proper horseshoe shape
@@ -719,7 +715,6 @@ function landmarksPass(world) {
     fill(lx, oy+18, lz-1, lx, oy+18, lz+1, 'glowstone');
   }
 
-
   // ═══════════════════════════════════════════════════
   // COLLEGE OF COMPUTING — Modern building
   // ═══════════════════════════════════════════════════
@@ -740,7 +735,7 @@ function landmarksPass(world) {
   for (let y = Y+4; y < Y+17; y += 4) {
     fill(ccx, y, ccz, ccx+14, y, ccz, 'white_concrete'); // spandrels
   }
-  // Lower wing (shorter, extending east)  
+  // Lower wing (shorter, extending east)
   fill(ccx+15, Y, ccz+2, ccx+22, Y+10, ccz+12, 'light_gray_concrete');
   fill(ccx+16, Y+1, ccz+3, ccx+21, Y+9, ccz+11, 'air');
   for (let z = ccz+3; z < ccz+12; z += 3) {
@@ -751,7 +746,6 @@ function landmarksPass(world) {
   // "CoC" sign
   fill(ccx+3, Y+15, ccz-1, ccx+11, Y+17, ccz-1, 'iron_block');
   fill(ccx+4, Y+16, ccz-1, ccx+10, Y+16, ccz-1, 'white_concrete');
-
 
   // ═══════════════════════════════════════════════════
   // ENHANCED DORMS — Not just boxes, add bay windows, entries
@@ -789,7 +783,6 @@ function detailsPass(world) {
   const CITY_MARGIN = 150;
   const cityX1 = campusX - CITY_MARGIN, cityZ1 = campusZ - CITY_MARGIN;
   const cityX2 = campusX + CW + CITY_MARGIN, cityZ2 = campusZ + CD + CITY_MARGIN;
-
 
   let detailCount = 0;
 
@@ -1161,7 +1154,6 @@ function realismPass(world) {
   const cx1=campusX-MARGIN, cz1=campusZ-MARGIN;
   const cx2=campusX+CW+MARGIN, cz2=campusZ+CD+MARGIN;
 
-
   let count=0;
 
   // ═══════════════════════════════════════════
@@ -1206,7 +1198,7 @@ function realismPass(world) {
   // Build shop rows along several streets
   const shopStreets = [
     { x: campusX+65, z: campusZ+55, dir:'z', len: 180 },  // along Atlantic Dr
-    { x: campusX+145, z: campusZ+155, dir:'z', len: 80 },  
+    { x: campusX+145, z: campusZ+155, dir:'z', len: 80 },
     { x: campusX+55, z: campusZ+55, dir:'x', len: 120 },  // along 10th St
     { x: campusX+55, z: campusZ+255, dir:'x', len: 150 },  // along Bobby Dodd
   ];
@@ -1379,7 +1371,7 @@ function realismPass(world) {
   fill(htx+4, oy+46, htz+4, htx+14, oy+46, htz+10, 'water');
   count++;
 
-  // HOSPITAL  
+  // HOSPITAL
   const hox = campusX - 100, hoz = campusZ + 250;
   fill(hox, oy+1, hoz, hox+25, oy+20, hoz+18, 'white_concrete');
   for (let x = hox+1; x < hox+25; x += 2) {
@@ -1444,6 +1436,7 @@ function realismPass(world) {
   for (let i = 0; i < 80; i++) {
     const pz = pkz + 25 + Math.floor(Math.sin(i*0.15)*10);
     fill(pkx+i, oy, pz, pkx+i, oy, pz+1, 'gravel');
+    fill(pkx+i, oy-1, pz, pkx+i, oy-1, pz+1, 'dirt'); // gravel and sand need a floor, or they fall
   }
   // Pond
   fill(pkx+50, oy-1, pkz+20, pkx+65, oy-1, pkz+35, 'water');
@@ -1456,6 +1449,7 @@ function realismPass(world) {
   }
   // Playground
   fill(pkx+10, oy, pkz+10, pkx+25, oy, pkz+20, 'sand');
+  fill(pkx+10, oy-1, pkz+10, pkx+25, oy-1, pkz+20, 'sandstone');
   // Slide (stairs + slab)
   fill(pkx+15, oy+1, pkz+12, pkx+15, oy+4, pkz+12, 'iron_bars');
   fill(pkx+15, oy+4, pkz+12, pkx+15, oy+4, pkz+15, 'smooth_stone_slab');
@@ -1650,13 +1644,13 @@ function realismPass(world) {
 export default {
   name: 'gt-campus',
   description:
-    'Georgia Tech campus in Atlanta (401×401 blocks): roads, Tech Green, Tech Tower with its gold dome, Bobby Dodd Stadium, CULC, ' +
-    'Crosland Tower, dorms, then crosswalks, trees, parking, fountain, Buzz statue, shops and subway entrances. ' +
-    'Ported from the legacy bot scripts (build-gt-city / build-gt-rebuild / build-details / build-realism2). ' +
-    '`city: true` adds the surrounding city, highway ring, canal, hotel, church… (about 730×730 blocks). ' +
-    'The legacy "flatten" (air above the campus) is off by default: clear the site with `mcb build --clear`, or set `flatten: true`.',
+    'Georgia Tech campus in Atlanta, 401×401 blocks: roads, Tech Green, Tech Tower with its gold dome, Bobby Dodd Stadium, CULC, ' +
+    'Crosland Tower, dorms, crosswalks, street trees, parking, fountain, Buzz statue, shops and subway entrances. ' +
+    'Ported from the legacy bot scripts (build-gt-city, build-gt-rebuild, build-details, build-realism2). ' +
+    '`city: true` adds the Atlanta around it (727×727 blocks: city blocks, highway ring, canal, hotel, church, hospital, MARTA…). ' +
+    'The legacy "flatten" (air above the campus) is off by default: clear the site with `mcb build --clear` (or set `flatten: true`).',
   params: {
-    city: { type: 'bool', default: false, description: 'also build the Atlanta city around the campus (blocks, highway ring, canal, hotel, church, hospital, MARTA, …) — huge' },
+    city: { type: 'bool', default: false, description: 'also build the Atlanta city around the campus (city blocks, highway ring, canal, hotel, church, hospital, MARTA, …): 727×727 blocks, 1.8 million voxels' },
     details: { type: 'bool', default: true, description: 'detail pass: crosswalks, traffic lights, trees, benches, parking lots with cars, fountain, flowers, bus stops, Buzz statue, …' },
     realism: { type: 'bool', default: true, description: 'realism pass: shops with awnings, subway entrances, outdoor dining, manholes, mailboxes, …' },
     flatten: { type: 'bool', default: false, description: 'clear the 401×60×401 campus volume to air inside the blueprint (the legacy flatten); `mcb build --clear` normally does this' },

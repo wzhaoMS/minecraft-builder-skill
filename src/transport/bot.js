@@ -16,6 +16,10 @@ import { formatBlock } from '../core/blockstate.js';
 
 const require = createRequire(import.meta.url);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Resolve once: require() re-runs module resolution (filesystem stats) on every call, which is
+// ruinous inside per-block loops.
+let VecClass = null;
+const Vec3 = () => (VecClass ??= require('vec3').Vec3);
 
 export class TransportError extends Error {
   constructor(message, { code, hint } = {}) {
@@ -368,14 +372,16 @@ export class BotTransport {
 
   /** Wait until the client has the chunks covering the area (server has them loaded too). */
   async waitForArea({ x1, z1, x2, z2 }, timeoutMs = 20_000) {
-    const { Vec3 } = require('vec3');
+    const V = Vec3();
     const t0 = Date.now();
     const cx1 = Math.floor(x1 / 16), cx2 = Math.floor(x2 / 16), cz1 = Math.floor(z1 / 16), cz2 = Math.floor(z2 / 16);
+    const p = new V(0, 0, 0);
     while (Date.now() - t0 < timeoutMs) {
       let missing = 0;
       for (let cx = cx1; cx <= cx2; cx++) {
         for (let cz = cz1; cz <= cz2; cz++) {
-          if (!this.bot.world.getColumnAt(new Vec3(cx * 16, 0, cz * 16))) missing++;
+          p.x = cx * 16; p.z = cz * 16;
+          if (!this.bot.world.getColumnAt(p)) missing++;
         }
       }
       if (!missing) return true;
@@ -392,14 +398,39 @@ export class BotTransport {
     await this.teleport(cx, y, cz, { area });
   }
 
-  /** Canonical block state at a position, or undefined if that chunk isn't loaded client-side. */
+  /**
+   * Edge length of the square area that's safely inside the bot's loaded view around one hover
+   * point (chunk sending is circular): 128 with ≥ 8 chunks of view distance, else 64.
+   */
+  get readTileSize() {
+    const vd = Math.min(this.bot.game?.serverViewDistance ?? 8, 12);
+    return vd >= 8 ? 128 : 64;
+  }
+
+  /**
+   * Canonical block state at a position, or undefined if that chunk isn't loaded client-side.
+   * Reads the chunk's state id directly (≈2000× faster than bot.blockAt) and caches the string.
+   */
   readBlock(x, y, z) {
-    const { Vec3 } = require('vec3');
-    const b = this.bot.blockAt(new Vec3(x, y, z), false);
-    if (!b) return undefined;
-    const props = {};
-    for (const [k, v] of Object.entries(b.getProperties?.() ?? {})) props[k] = String(v);
-    return formatBlock({ name: b.name, props, nbt: null });
+    if (!this._rv) { const V = Vec3(); this._rv = new V(0, 0, 0); this._rp = new V(0, 0, 0); }
+    this._rv.x = x; this._rv.y = 0; this._rv.z = z;
+    const col = this.bot.world.getColumnAt(this._rv);
+    if (!col) return undefined;
+    this._rp.x = x & 15; this._rp.y = y; this._rp.z = z & 15;
+    let id;
+    try { id = col.getBlockStateId(this._rp); } catch { return undefined; }
+    if (id === undefined || id === null) return undefined;
+    this._stateCache ??= new Map();
+    let s = this._stateCache.get(id);
+    if (s === undefined) {
+      this._Block ??= require('prismarine-block')(this.bot.registry);
+      const b = this._Block.fromStateId(id, 0);
+      const props = {};
+      for (const [k, v] of Object.entries(b.getProperties?.() ?? {})) props[k] = String(v);
+      s = formatBlock({ name: b.name, props, nbt: null });
+      this._stateCache.set(id, s);
+    }
+    return s;
   }
 
   /** Position, facing and dimension of an online player. */

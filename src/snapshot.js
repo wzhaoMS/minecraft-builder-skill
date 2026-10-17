@@ -12,7 +12,7 @@ import { splitBox } from './compile/plan.js';
  * Read every block in `box` ([x1,y1,z1,x2,y2,z2]) via a transport that can read (bot).
  * @returns {Promise<{ structure: Structure, unknown: number }>}
  */
-export async function captureRegion(transport, box, { tile = 64, onProgress } = {}) {
+export async function captureRegion(transport, box, { tile = transport.readTileSize ?? 64, onProgress } = {}) {
   if (!transport.canRead) throw new Error(`The ${transport.kind} transport cannot read blocks (use the bot transport)`);
   const [x1, y1, z1, x2, y2, z2] = box;
   const s = new Structure({ name: 'snapshot' });
