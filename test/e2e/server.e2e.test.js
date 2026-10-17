@@ -20,6 +20,7 @@ import { fromJson } from '../../src/io/blueprint.js';
 import { listSnapshots, decodeSnapshot } from '../../src/snapshot.js';
 import { getGamerule } from '../../src/gamerules.js';
 import { connectBot } from '../../src/transport/bot.js';
+import { undoBuild } from '../../src/undo.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const enabled = process.env.MCB_E2E === '1';
@@ -51,21 +52,97 @@ after(async () => {
 test('bot build → verify 100% → undo restores the original blocks', { skip: !enabled }, async () => {
   const s = await tower();
   const at = [1000, Y, 1000];
-  const before = await getGamerule(bot, 'logAdminCommands');
+  const before = await getGamerule(bot, 'sendCommandFeedback');
   const r = await executeBuild({ structure: s, transport: bot, at, verify: true, clear: 1, stateDir: state });
   assert.equal(r.errorCount, 0, JSON.stringify(r.errors));
+  assert.equal(r.status, 'complete');
   assert.equal(r.verify.remaining, 0, JSON.stringify(r.verify.examples));
+  assert.equal(r.verify.unreadable, 0);
   assert.ok(r.undo?.id, 'undo snapshot saved');
   assert.ok(r.lint.fixes.some((f) => /oak_door/.test(f.message)), 'door upper half auto-completed');
-  // gamerule restored to what it was before the build
-  const g = await getGamerule(bot, 'logAdminCommands');
+  // command echo was muted during the build and restored afterwards
+  const g = await getGamerule(bot, 'sendCommandFeedback');
   assert.equal(g.value, before.value);
-  // undo
-  const snap = decodeSnapshot(fs.readFileSync(listSnapshots(state)[0].file));
-  const u = await executeBuild({ structure: snap.structure, transport: bot, at: [0, 0, 0], anchor: 'origin', strict: true, undo: false, force: true, fixMultiblocks: false });
-  assert.equal(u.errorCount, 0);
+  assert.ok(!fs.existsSync(path.join(state, 'gamerules-pending.json')), 'journal removed after restore');
+  // undo (only what the build changed, checking for later edits)
+  const snapFile = listSnapshots(state)[0].file;
+  const snap = decodeSnapshot(fs.readFileSync(snapFile));
+  const u = await undoBuild(bot, snapFile, { stateDir: state });
+  assert.equal(u.ok, true, JSON.stringify(u));
+  assert.equal(u.conflicts, 0);
   const v = await verifyAndRepair(bot, snap.structure, { repair: false, strict: false });
   assert.equal(v.mismatches, 0, JSON.stringify(v.examples));
+});
+
+test('undo leaves blocks edited after the build alone and reports them', { skip: !enabled || !cfg.rconPassword }, async () => {
+  const s = await tower();
+  const at = [1000, Y, 1060];
+  const r = await executeBuild({ structure: s, transport: bot, at, stateDir: state });
+  assert.ok(r.undo?.id);
+  // a "player" edits one wall block after the build
+  await rcon.loadArea({ x1: 1000, z1: 1060, x2: 1006, z2: 1066 });
+  await rcon.command(`setblock 1000 ${Y + 3} 1060 gold_block`);
+  const snapFile = listSnapshots(state).find((x) => x.id === r.undo.id).file;
+  const u = await undoBuild(bot, snapFile, { stateDir: state });
+  assert.equal(u.conflicts, 1, JSON.stringify(u.conflictExamples));
+  assert.deepEqual(u.conflictExamples[0].pos, [1000, Y + 3, 1060]);
+  assert.match(u.conflictExamples[0].found, /gold_block/);
+  const still = (await rcon.query(`execute if block 1000 ${Y + 3} 1060 gold_block`)).text;
+  assert.match(still, /passed/i, 'the edited block was not overwritten');
+  const other = (await rcon.query(`execute if block 1001 ${Y + 3} 1060 air`)).text;
+  assert.match(other, /passed/i, 'the rest was restored');
+});
+
+test('builds refuse to destroy chests/signs (nothing changes) unless forced', { skip: !enabled || !cfg.rconPassword }, async () => {
+  await rcon.loadArea({ x1: 1100, z1: 1060, x2: 1110, z2: 1070 });
+  await rcon.command(`setblock 1102 ${Y + 1} 1062 chest[facing=north]`);
+  const s = await tower();
+  await assert.rejects(
+    () => executeBuild({ structure: s, transport: bot, at: [1100, Y, 1060], stateDir: state }),
+    (e) => e.code === 'CONTAINERS_AT_RISK' && /chest at 1102/.test(e.message),
+  );
+  assert.match((await rcon.query(`execute if block 1100 ${Y} 1060 air`)).text, /passed/i, 'no block was changed');
+  assert.match((await rcon.query(`execute if block 1102 ${Y + 1} 1062 chest`)).text, /passed/i);
+  const plan = await executeBuild({ structure: s, transport: bot, at: [1100, Y, 1060], planOnly: true, stateDir: state });
+  assert.equal(plan.status, 'planned');
+  assert.equal(plan.impact.containerCount, 1);
+  const forced = await executeBuild({ structure: s, transport: bot, at: [1100, Y, 1060], force: true, stateDir: state });
+  assert.equal(forced.errorCount, 0);
+});
+
+test('verify catches a wrong block; an asymmetric rotated build across chunk borders at negative coords is exact', { skip: !enabled || !cfg.rconPassword }, async () => {
+  const s = await fromJson({
+    name: 'asym',
+    palette: { S: 'stone_bricks', R: 'red_concrete', B: 'blue_concrete', T: 'oak_stairs[facing=east]', L: 'oak_log[axis=x]' },
+    fills: [{ from: [0, 0, 0], to: [20, 0, 6], block: 'S' }],
+    blocks: [[20, 1, 0, 'R'], [0, 1, 6, 'B'], [5, 1, 3, 'T'], [10, 1, 3, 'L']],
+  });
+  // crosses the x = -1000/-992 and z = -16 chunk borders, rotated 90°
+  const r = await executeBuild({ structure: s, transport: bot, at: [-1005, Y, -20], facing: 'west', verify: true, stateDir: state });
+  assert.equal(r.verify.remaining, 0, JSON.stringify(r.verify.examples));
+  const placed = (await import('../../src/placement.js')).resolvePlacement(s, { at: [-1005, Y, -20], facing: 'west' }).world;
+  let stairs = null, log = null;
+  placed.forEach((x, y, z, b) => { if (b.startsWith('oak_stairs')) stairs = b; if (b.startsWith('oak_log')) log = b; });
+  assert.equal(stairs, 'oak_stairs[facing=south]');
+  assert.equal(log, 'oak_log[axis=z]');
+  // tamper with one block → verify without repair reports exactly that block
+  let anyPos = null;
+  placed.forEach((x, y, z, b) => { if (!anyPos && b === 'stone_bricks') anyPos = [x, y, z]; });
+  await rcon.loadArea({ x1: anyPos[0], z1: anyPos[2], x2: anyPos[0], z2: anyPos[2] });
+  await rcon.command(`setblock ${anyPos.join(' ')} dirt`);
+  const v = await verifyAndRepair(bot, placed, { repair: false });
+  assert.equal(v.mismatches, 1);
+  assert.deepEqual(v.examples[0].pos, anyPos);
+});
+
+test('rcon builds release every forceload ticket they added', { skip: !enabled || !cfg.rconPassword }, async () => {
+  const q = async () => (await rcon.query('forceload query')).text.replace(/\s+/g, ' ');
+  await rcon.releaseAreas();
+  const before = await q();
+  const s = await tower();
+  await executeBuild({ structure: s, transport: rcon, at: [1180, Y, 1180], undo: false });
+  await rcon.releaseAreas();
+  assert.equal(await q(), before);
 });
 
 test('rebuilding an identical structure skips everything already in place', { skip: !enabled }, async () => {

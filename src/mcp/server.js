@@ -6,14 +6,13 @@
  *   { "mcpServers": { "minecraft": { "command": "node", "args": ["<repo>/bin/mcb.js", "mcp"] } } }
  */
 import fs from 'node:fs';
-import path from 'node:path';
 import readline from 'node:readline';
 import { resolveConfig, stateDir } from '../config.js';
 import { openTransport } from '../connect.js';
 import { loadBlueprint, fromJson } from '../io/blueprint.js';
 import { lintStructure } from '../core/lint.js';
 import { executeBuild } from '../build.js';
-import { listSnapshots, decodeSnapshot, captureRegion } from '../snapshot.js';
+import { listSnapshots, captureRegion } from '../snapshot.js';
 import { parseCoords } from '../cli/args.js';
 import { DEFAULT_MC_VERSION } from '../core/blockinfo.js';
 
@@ -25,6 +24,22 @@ const blueprintSchema = {
   anyOf: [{ type: 'string' }, { type: 'object' }],
 };
 
+const buildProperties = {
+  blueprint: blueprintSchema,
+  params: { type: 'object' },
+  at: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 },
+  near: { type: 'string', description: 'Player name: build in front of them, facing them' },
+  facing: { type: 'string', enum: ['north', 'east', 'south', 'west'] },
+  anchor: { type: 'string', enum: ['corner', 'center', 'origin'] },
+  dimension: { type: 'string', enum: ['overworld', 'the_nether', 'the_end'] },
+  clear: { type: 'boolean', description: 'Empty the area (+2 blocks margin) first' },
+  ground: { type: 'string', description: 'Block for a foundation layer under the footprint' },
+  verify: { type: 'boolean', default: true },
+  force: { type: 'boolean', description: 'Allow overwriting chests/signs/other blocks whose contents undo cannot restore' },
+  dryRun: { type: 'boolean' },
+  mode: { type: 'string', enum: ['fill', 'layered', 'hand'] },
+};
+
 export const TOOLS = [
   {
     name: 'mc_generators',
@@ -33,7 +48,7 @@ export const TOOLS = [
   },
   {
     name: 'mc_preview',
-    description: 'Render a blueprint to a PNG (iso view from the south-east, top view with north up, south and east elevations) and return it with size/block counts. Always look at this before building.',
+    description: 'Render a blueprint to a PNG (iso view from the south-east, top view with north up, south and east elevations) and return it with size/block counts. Always look at this before building. Colors are approximate.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -50,30 +65,19 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: { blueprint: blueprintSchema, params: { type: 'object' } }, required: ['blueprint'] },
   },
   {
+    name: 'mc_plan',
+    description: 'Read-only: resolve where a build would land and report what it would replace (existing blocks, containers), how many commands it needs and whether undo is available. Changes nothing.',
+    inputSchema: { type: 'object', properties: buildProperties, required: ['blueprint'] },
+  },
+  {
     name: 'mc_build',
     description: 'Build a blueprint in the running world. Give either at=[x,y,z] (north-west footprint corner, y = feet level) or near=<player>. The blueprint front faces south; facing rotates it. Returns a report with world bounds, verify results and an undo id.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        blueprint: blueprintSchema,
-        params: { type: 'object' },
-        at: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 },
-        near: { type: 'string', description: 'Player name: build in front of them, facing them' },
-        facing: { type: 'string', enum: ['north', 'east', 'south', 'west'] },
-        anchor: { type: 'string', enum: ['corner', 'center', 'origin'] },
-        clear: { type: 'boolean', description: 'Empty the area (+2 blocks margin) first' },
-        ground: { type: 'string', description: 'Block for a foundation layer under the footprint' },
-        verify: { type: 'boolean', default: true },
-        dryRun: { type: 'boolean' },
-        mode: { type: 'string', enum: ['fill', 'layered', 'hand'] },
-      },
-      required: ['blueprint'],
-    },
+    inputSchema: { type: 'object', properties: buildProperties, required: ['blueprint'] },
   },
   {
     name: 'mc_undo',
-    description: 'Undo a build (default: the most recent), restoring the blocks that were there before. list=true lists undo snapshots.',
-    inputSchema: { type: 'object', properties: { id: { type: 'string' }, list: { type: 'boolean' } } },
+    description: 'Undo a build (default: the most recent): restores what it changed, leaving blocks edited since alone (force=true restores them too). list=true lists undo snapshots.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, list: { type: 'boolean' }, force: { type: 'boolean' } } },
   },
   {
     name: 'mc_where',
@@ -151,22 +155,23 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
       const report = await executeBuild({
         structure: s, transport: tr, at: a.at ?? (a.dryRun && !near ? [0, 0, 0] : undefined), near, facing: a.facing, anchor: a.anchor,
         clear: !!a.clear, ground: a.ground, verify: a.verify !== false, dryRun: !!a.dryRun, mode: a.mode ?? 'fill',
+        dimension: a.dimension, force: !!a.force, planOnly: !!a.planOnly,
         stateDir: stateDir(cfg), version: cfg.version ?? tr.version, log,
       });
       if (report.commands) report.commands = report.commands.slice(0, 200);
       return text(report);
     },
-    async mc_undo({ id, list } = {}) {
+    async mc_plan(a) {
+      return handlers.mc_build({ ...a, planOnly: true, dryRun: false });
+    },
+    async mc_undo({ id, list, force } = {}) {
       const snaps = listSnapshots(stateDir(cfg));
       if (list) return text(snaps.map((s) => ({ id: s.id, time: new Date(s.mtime).toISOString() })));
-      const snap = id ? snaps.find((s) => s.id === id || s.id.startsWith(id)) : snaps[0];
-      if (!snap) throw new Error('Nothing to undo');
-      const data = decodeSnapshot(fs.readFileSync(snap.file));
-      const report = await executeBuild({ structure: data.structure, transport: await getTransport(), at: [0, 0, 0], anchor: 'origin', strict: true, undo: false, fixMultiblocks: false, force: true, log });
-      const applied = path.join(path.dirname(snap.file), 'applied');
-      fs.mkdirSync(applied, { recursive: true });
-      fs.renameSync(snap.file, path.join(applied, path.basename(snap.file)));
-      return text({ ok: report.ok, id: snap.id, restoredBlocks: data.structure.count });
+      const { findSnapshot, undoBuild, markApplied } = await import('../undo.js');
+      const snap = findSnapshot(stateDir(cfg), id);
+      const r = await undoBuild(await getTransport(), snap.file, { force: !!force, log, stateDir: stateDir(cfg) });
+      if (!r.build || r.build.ok) markApplied(snap.file);
+      return text({ ok: r.ok, id: r.id, restored: r.restored, conflicts: r.conflicts, conflictExamples: r.conflictExamples, hint: r.hint });
     },
     async mc_where({ player } = {}) {
       const t = await getTransport();
@@ -191,7 +196,7 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
       if (vol > 200_000) throw new Error(`Region too large for an inline snapshot (${vol} blocks > 200000); use the CLI: mcb snapshot -o file.schem`);
       const t = await getTransport();
       const { withGamerules } = await import('../gamerules.js');
-      const cap = await withGamerules(t, { logAdminCommands: false }, () => captureRegion(t, box));
+      const cap = await withGamerules(t, { sendCommandFeedback: false }, () => captureRegion(t, box), { journalDir: stateDir(cfg) });
       let s = cap.structure;
       if (!keepAir) s.replace('air', null);
       s = s.translated(-box[0], -box[1], -box[2]);

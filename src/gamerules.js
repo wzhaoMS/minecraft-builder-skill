@@ -1,8 +1,17 @@
 /**
  * Version-tolerant gamerules. Minecraft 1.21.11 renamed rules to snake_case
- * (doDaylightCycle → advance_time, logAdminCommands → log_admin_commands, …); old names now error.
- * We try the new name first and fall back to the legacy one.
+ * (doDaylightCycle → advance_time, sendCommandFeedback → send_command_feedback, …) and the old
+ * names now error, so we try the new name first and fall back to the legacy one.
+ *
+ * Quiet builds: every successful command an operator runs is echoed to all OTHER operators'
+ * chat ("[BuilderBot: Changed the block at …]") unless `send_command_feedback` is false
+ * (`log_admin_commands` only controls the server log). Builds therefore switch
+ * send_command_feedback off while they run and restore it afterwards — also on Ctrl+C, and,
+ * via a small journal file, on the next run after a crash.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+
 export const GAMERULES = {
   logAdminCommands: ['log_admin_commands', 'logAdminCommands'],
   sendCommandFeedback: ['send_command_feedback', 'sendCommandFeedback'],
@@ -11,6 +20,7 @@ export const GAMERULES = {
   doWeatherCycle: ['advance_weather', 'doWeatherCycle'],
   doMobSpawning: ['spawn_mobs', 'doMobSpawning'],
   maxBlockModifications: ['max_block_modifications', 'commandModificationBlockLimit'],
+  maxCommandChainLength: ['max_command_sequence_length', 'maxCommandChainLength'],
 };
 
 const resolved = new WeakMap(); // transport → { key: name }
@@ -39,22 +49,45 @@ export async function setGamerule(transport, key, value) {
   return cur;
 }
 
+const JOURNAL = 'gamerules-pending.json';
+
+/** Restore gamerules left changed by a crashed/killed earlier run (same server). */
+export async function recoverGamerules(transport, journalDir) {
+  if (!journalDir || transport.kind === 'dry-run') return [];
+  const file = path.join(journalDir, JOURNAL);
+  if (!fs.existsSync(file)) return [];
+  let data;
+  try { data = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { fs.rmSync(file, { force: true }); return []; }
+  if (data.server && transport.serverKey && data.server !== transport.serverKey) return [];
+  for (const [name, value] of data.rules ?? []) {
+    try { await transport.command(`gamerule ${name} ${value}`, { allowErrors: true }); } catch { /* ignore */ }
+  }
+  fs.rmSync(file, { force: true });
+  return data.rules ?? [];
+}
+
 /**
- * Temporarily set gamerules while `fn` runs, restoring previous values afterwards (even on error).
- * @param {Record<string, string|boolean|number>} settings e.g. { logAdminCommands: false }
+ * Temporarily set gamerules while `fn` runs, restoring previous values afterwards (even on error,
+ * Ctrl+C, or — through the journal in `journalDir` — a crash).
+ * @param {Record<string, string|boolean|number>} settings e.g. { sendCommandFeedback: false }
  */
-export async function withGamerules(transport, settings, fn) {
+export async function withGamerules(transport, settings, fn, { journalDir = null } = {}) {
   const restore = [];
+  const journal = journalDir ? path.join(journalDir, JOURNAL) : null;
   if (transport.kind !== 'dry-run') {
     for (const [key, value] of Object.entries(settings)) {
       try {
         const cur = await getGamerule(transport, key);
         if (cur && String(cur.value) !== String(value)) {
-          await transport.command(`gamerule ${cur.name} ${value}`, { allowErrors: true });
           restore.push([cur.name, cur.value]);
+          if (journal) {
+            fs.mkdirSync(journalDir, { recursive: true });
+            fs.writeFileSync(journal, JSON.stringify({ server: transport.serverKey ?? null, rules: restore, at: new Date().toISOString() }));
+          }
+          await transport.command(`gamerule ${cur.name} ${value}`, { allowErrors: true });
         }
       } catch {
-        // non-fatal
+        // non-fatal: building still works, players may just see command echo
       }
     }
   }
@@ -65,8 +98,8 @@ export async function withGamerules(transport, settings, fn) {
     for (const [name, value] of restore) {
       try { await transport.command(`gamerule ${name} ${value}`, { allowErrors: true }); } catch { /* ignore */ }
     }
+    if (journal && restore.length) fs.rmSync(journal, { force: true });
   };
-  // Ctrl+C mid-build must not leave the server with changed gamerules.
   const onSignal = () => { restoreAll().finally(() => process.exit(130)); };
   if (restore.length) { process.once('SIGINT', onSignal); process.once('SIGTERM', onSignal); }
   try {

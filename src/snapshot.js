@@ -40,10 +40,8 @@ export async function captureRegion(transport, box, { tile = 64, onProgress } = 
   return { structure: s, unknown };
 }
 
-export function encodeSnapshot({ id, name, box, structure, meta = {} }) {
+function rleEncode(structure, box, palette, pidx) {
   const [x1, y1, z1, x2, y2, z2] = box;
-  const palette = [null];
-  const pidx = new Map();
   const rle = [];
   let last = -1, run = 0;
   for (let y = y1; y <= y2; y++) {
@@ -61,25 +59,49 @@ export function encodeSnapshot({ id, name, box, structure, meta = {} }) {
     }
   }
   if (run) rle.push(run, last);
-  const json = JSON.stringify({ format: 'mcb-snapshot', version: 1, id, name, createdAt: new Date().toISOString(), box, palette, rle, meta });
+  return rle;
+}
+
+function rleDecode(rle, box, ids, s) {
+  const [x1, y1, z1, x2, , z2] = box;
+  let x = x1, y = y1, z = z1;
+  for (let i = 0; i < rle.length; i += 2) {
+    const n = rle[i], id = ids[rle[i + 1]];
+    for (let k = 0; k < n; k++) {
+      if (id) s.setId(x, y, z, id);
+      if (++x > x2) { x = x1; if (++z > z2) { z = z1; y++; } }
+    }
+  }
+  return s;
+}
+
+/**
+ * Encode a snapshot: `structure` = world blocks before the build (whole box),
+ * `after` = what the build set (null where it didn't touch) — lets undo restore only what the
+ * build changed and detect edits made since.
+ */
+export function encodeSnapshot({ id, name, box, structure, after = null, meta = {} }) {
+  const palette = [null];
+  const pidx = new Map();
+  const rle = rleEncode(structure, box, palette, pidx);
+  const afterRle = after ? rleEncode(after, box, palette, pidx) : null;
+  const json = JSON.stringify({ format: 'mcb-snapshot', version: 2, id, name, createdAt: new Date().toISOString(), box, palette, rle, after: afterRle, meta });
   return zlib.gzipSync(json);
 }
 
 export function decodeSnapshot(buf) {
   const data = JSON.parse(zlib.gunzipSync(buf).toString('utf8'));
   if (data.format !== 'mcb-snapshot') throw new Error('Not an mcb snapshot');
-  const [x1, y1, z1, x2, , z2] = data.box;
   const s = new Structure({ name: data.name ?? 'snapshot' });
   const ids = data.palette.map((b) => (b == null ? 0 : s.idOf(b)));
-  let x = x1, y = y1, z = z1;
-  for (let i = 0; i < data.rle.length; i += 2) {
-    const n = data.rle[i], id = ids[data.rle[i + 1]];
-    for (let k = 0; k < n; k++) {
-      if (id) s.setId(x, y, z, id);
-      if (++x > x2) { x = x1; if (++z > z2) { z = z1; y++; } }
-    }
+  rleDecode(data.rle, data.box, ids, s);
+  let after = null;
+  if (data.after) {
+    after = new Structure({ name: `${data.name ?? 'snapshot'}-after` });
+    const aids = data.palette.map((b) => (b == null ? 0 : after.idOf(b)));
+    rleDecode(data.after, data.box, aids, after);
   }
-  return { ...data, structure: s };
+  return { ...data, structure: s, after };
 }
 
 export function snapshotDir(stateDir) {

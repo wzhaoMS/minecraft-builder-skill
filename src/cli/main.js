@@ -12,13 +12,13 @@ import { lintStructure } from '../core/lint.js';
 import { planBuild } from '../compile/plan.js';
 import { executeBuild } from '../build.js';
 import { openTransport } from '../connect.js';
-import { listSnapshots, decodeSnapshot, captureRegion } from '../snapshot.js';
+import { listSnapshots, captureRegion } from '../snapshot.js';
 import { DEFAULT_MC_VERSION } from '../core/blockinfo.js';
 
 const require = createRequire(import.meta.url);
 const PKG = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
 
-const BOOLEANS = ['json', 'quiet', 'help', 'verify', 'strict', 'dryRun', 'force', 'acceptEula', 'fawe', 'installJava', 'list', 'noAir', 'all', 'yes', 'repair', 'undo', 'lan'];
+const BOOLEANS = ['json', 'quiet', 'help', 'verify', 'strict', 'dryRun', 'force', 'acceptEula', 'fawe', 'installJava', 'list', 'noAir', 'all', 'yes', 'repair', 'undo', 'lan', 'echo'];
 
 export const HELP = `mcb ${PKG.version} — build anything in Minecraft Java Edition (for AI agents and humans)
 
@@ -33,10 +33,12 @@ DESIGN
   generate <generator> [-p k=v]... -o <file>           Run a generator and save the result
 
 BUILD (needs a running server)
+  plan <blueprint> (--at x,y,z | --near <player>) [build flags]   Read-only: where it lands, what it replaces, cost
   build <blueprint> (--at x,y,z | --near <player>) [--facing north|east|south|west] [--rotate 90]
         [--mirror x|z] [--anchor corner|center|origin] [--clear [margin]] [--ground <block>]
-        [--verify] [--strict] [--mode fill|layered|hand] [--bps 20] [--no-undo] [--dry-run] [-p k=v]
-  undo [id] [--list]                 Restore the world as it was before a build
+        [--verify] [--strict] [--mode fill|layered|hand] [--bps 20] [--dimension overworld|the_nether|the_end]
+        [--no-undo] [--force] [--echo] [--dry-run] [-p k=v]
+  undo [id] [--list] [--force]       Restore what a build changed (skips blocks edited since, unless --force)
   watch <blueprint> (--at x,y,z | --near <player>)   Rebuild live whenever the file is saved (only changes are sent)
   snapshot --from x,y,z --to x,y,z -o <file.json|.schem> [--render out.png]   Copy a region into a blueprint
   where [player]                     Player position and facing (or list players)
@@ -229,19 +231,21 @@ function buildOptsFromFlags(flags, cfg) {
     undo: flags.undo !== false,
     dryRun: !!flags.dryRun,
     force: !!flags.force,
+    dimension: flags.dimension && flags.dimension !== true ? flags.dimension : undefined,
     stateDir: stateDir(cfg),
-    quiet: flags.quietOps === false ? false : undefined,
+    quiet: flags.echo === true ? false : undefined,
   };
 }
 
-async function cmdBuild(flags, out) {
+async function cmdBuild(flags, out, { planOnly = false } = {}) {
   const cfg = resolveConfig(flags);
   const s = await loadWithParams(flags._[1], flags);
   const o = buildOptsFromFlags(flags, cfg);
+  o.planOnly = planOnly;
   if (!flags.at && !o.near && cfg.player) o.near = cfg.player;
   if (!flags.at && !o.near && !o.dryRun) {
     throw Object.assign(new Error('Where should it go? Pass --at x,y,z or --near <player>'), {
-      hint: 'Find coordinates with `mcb where <player>` (F3 in game), or set "player" in mcb.config.json.', exitCode: 2,
+      code: 'PLACEMENT_REQUIRED', hint: 'Find coordinates with `mcb where <player>` (F3 in game), or set "player" in mcb.config.json.', exitCode: 2,
     });
   }
   const transport = await openTransport(cfg, { dryRun: o.dryRun, log: (m) => out.log(m) });
@@ -253,7 +257,7 @@ async function cmdBuild(flags, out) {
     } else if (o.dryRun && !o.near) {
       o.at = [0, 0, 0];
     }
-    out.log(`building "${s.name}" via ${transport.kind}${transport.version ? ` (server ${transport.version})` : ''}…`);
+    out.log(`${planOnly ? 'planning' : 'building'} "${s.name}" via ${transport.kind}${transport.version ? ` (server ${transport.version})` : ''}…`);
     const report = await executeBuild({
       structure: s, transport, ...o, version: cfg.version ?? transport.version,
       log: (m) => out.log(m), onProgress: (p) => out.progress(p),
@@ -265,11 +269,26 @@ async function cmdBuild(flags, out) {
     }
     if (o.dryRun) report.commands = report.commands.slice(0, flags.limit ? Number(flags.limit) : 2000);
     out.result(report);
-    printReport(report, out);
+    if (planOnly) printPlan(report, out);
+    else printReport(report, out);
     return report.ok ? 0 : 3;
   } finally {
     await transport.close();
   }
+}
+
+function printPlan(r, out) {
+  out.print(`plan for "${r.name}" in the ${r.dimension}: ${r.size.join('×')} at ${r.box.slice(0, 3).join(',')} → ${r.box.slice(3).join(',')} (front faces ${r.facing})`);
+  out.print(`  ${r.voxels} blocks → ${r.plan.commands} commands; ${r.commandsToSend ?? r.plan.commands} needed now${r.skipped ? ` (${r.skipped} already in place)` : ''}, ~${r.estimatedSeconds ?? '?'}s`);
+  if (r.impact) {
+    const top = Object.entries(r.impact.replaced).slice(0, 6).map(([b, n]) => `${n} ${b}`).join(', ');
+    out.print(`  changes ${r.impact.changes} blocks; replaces ${r.impact.replacedBlocks} existing non-air blocks${top ? ` (${top})` : ''}`);
+    if (r.impact.containerCount) out.print(`  ⚠ would destroy ${r.impact.containerCount} container/sign block(s), e.g. ${r.impact.containers.slice(0, 3).map((c) => `${c.block} at ${c.pos.join(',')}`).join('; ')} — build will refuse without --force`);
+  } else {
+    out.print('  (impact unknown: connect with the bot transport to read the area)');
+  }
+  for (const w of r.lint?.warnings ?? []) out.print(`  ⚠ ${w.message} (${w.count}×)`);
+  for (const w of r.warnings ?? []) out.print(`  ⚠ ${w}`);
 }
 
 async function poseBase(transport, player) {
@@ -289,10 +308,13 @@ function printReport(r, out) {
   for (const e of r.errors ?? []) out.print(`  ✗ ${e.count}× ${e.message}${e.hint ? ` — ${e.hint}` : ''}${e.examples?.length ? `\n      e.g. /${e.examples[0]}` : ''}`);
   if (r.verify) {
     const v = r.verify;
-    out.print(`  verify: ${v.checked} checked, ${v.mismatches} mismatched, ${v.repaired} repaired, ${v.remaining} remaining`);
+    out.print(`  verify: ${v.checked} checked, ${v.matched} match, ${v.mismatches} mismatched → ${v.repaired} repaired, ${v.remaining} remaining${v.unreadable ? `, ${v.unreadable} unreadable` : ''}`);
     for (const m of v.examples ?? []) out.print(`    at ${m.pos.join(',')}: expected ${m.expected}, found ${m.actual}`);
   }
-  if (r.undo) out.print(`  undo: mcb undo ${r.undo.id}`);
+  if (r.impact?.replacedBlocks) out.print(`  replaced ${r.impact.replacedBlocks} existing blocks (${Object.entries(r.impact.replaced).slice(0, 4).map(([b, n]) => `${n} ${b}`).join(', ')})`);
+  if (r.undo?.available) out.print(`  undo: mcb undo ${r.undo.id}`);
+  else if (r.undo) out.print(`  undo: not available — ${r.undo.reason}`);
+  if (r.reconnects) out.print(`  reconnected ${r.reconnects}× during the build`);
 }
 
 async function cmdWatch(flags, out) {
@@ -366,25 +388,27 @@ async function cmdUndo(flags, out) {
     return 0;
   }
   const want = flags._[1];
-  const snap = want ? snaps.find((s) => s.id === want || s.id.startsWith(want)) : snaps[0];
-  if (!snap) throw Object.assign(new Error(want ? `No snapshot "${want}"` : 'Nothing to undo'), { hint: 'List snapshots with `mcb undo --list`.' });
-  const data = decodeSnapshot(fs.readFileSync(snap.file));
+  const { findSnapshot, undoBuild, markApplied } = await import('../undo.js');
+  const snap = findSnapshot(dir, want);
   const transport = await openTransport(cfg, { log: (m) => out.log(m) });
   try {
-    out.log(`restoring ${data.structure.count} blocks from ${snap.id}…`);
-    const report = await executeBuild({
-      structure: data.structure, transport, at: [0, 0, 0], anchor: 'origin', strict: true, undo: false, noSkip: false,
-      log: (m) => out.log(m), onProgress: (p) => out.progress(p), fixMultiblocks: false, force: true,
-    });
-    const applied = path.join(path.dirname(snap.file), 'applied');
-    fs.mkdirSync(applied, { recursive: true });
-    fs.renameSync(snap.file, path.join(applied, path.basename(snap.file)));
-    out.result({ ok: report.ok, id: snap.id, report });
-    out.print(`${report.ok ? '✓' : '✗'} undo ${snap.id}: restored ${data.structure.count} blocks in ${(report.durationMs / 1000).toFixed(1)}s`);
-    return report.ok ? 0 : 3;
+    out.log(`undoing ${snap.id}…`);
+    const r = await undoBuild(transport, snap.file, { force: !!flags.force, log: (m) => out.log(m), onProgress: (p) => out.progress(p), stateDir: dir });
+    if (!r.build || r.build.ok) markApplied(snap.file);
+    out.result({ schema: 'mcb.undo-report/1', ...r });
+    out.print(`${r.ok ? '✓' : '⚠'} undo ${snap.id}: restored ${r.restored} blocks${r.build ? ` in ${(r.build.durationMs / 1000).toFixed(1)}s` : ''}`);
+    if (r.conflicts) {
+      out.print(`  ⚠ ${r.conflicts} block(s) were changed after the build and were left alone (use --force to restore them too):`);
+      for (const c of r.conflictExamples.slice(0, 5)) out.print(`    at ${c.pos.join(',')}: now ${c.found} (build had set ${c.expected})`);
+    }
+    return r.ok ? 0 : 3;
   } finally {
     await transport.close();
   }
+}
+
+async function cmdPlan(flags, out) {
+  return cmdBuild(flags, out, { planOnly: true });
 }
 
 async function cmdSnapshot(flags, out) {
@@ -395,8 +419,12 @@ async function cmdSnapshot(flags, out) {
   const transport = await openTransport(cfg, { prefer: 'bot', log: (m) => out.log(m) });
   try {
     const { withGamerules } = await import('../gamerules.js');
-    const cap = await withGamerules(transport, { logAdminCommands: false }, () =>
-      captureRegion(transport, box, { onProgress: (d, n) => out.progress({ stage: 'snapshot', done: d, total: n }) }));
+    if (flags.dimension && flags.dimension !== true) {
+      const { normalizeDimension, DIMENSIONS } = await import('../build.js');
+      transport.setDimension?.(DIMENSIONS[normalizeDimension(flags.dimension)].id);
+    }
+    const cap = await withGamerules(transport, { sendCommandFeedback: false }, () =>
+      captureRegion(transport, box, { onProgress: (d, n) => out.progress({ stage: 'snapshot', done: d, total: n }) }), { journalDir: stateDir(cfg) });
     let s = cap.structure;
     if (flags.noAir || flags.air === false) s.replace('air', null);
     s = s.translated(-box[0], -box[1], -box[2]);
@@ -605,7 +633,7 @@ async function cmdMcp(flags) {
 
 const COMMANDS = {
   generators: cmdGenerators, gens: cmdGenerators, info: cmdInfo, validate: cmdValidate, preview: cmdPreview,
-  export: cmdExport, generate: cmdGenerate, build: cmdBuild, watch: cmdWatch, undo: cmdUndo, snapshot: cmdSnapshot, where: cmdWhere,
+  export: cmdExport, generate: cmdGenerate, plan: cmdPlan, build: cmdBuild, watch: cmdWatch, undo: cmdUndo, snapshot: cmdSnapshot, where: cmdWhere,
   cmd: cmdCmd, doctor: cmdDoctor, server: cmdServer, mcp: cmdMcp,
 };
 

@@ -1,0 +1,432 @@
+/**
+ * Preview renderer: Structure → PNG an AI agent (or human) can look at before building.
+ *
+ *   renderPreview(structure, { view: 'sheet' | 'iso' | 'iso-ne' | 'iso-nw' | 'iso-sw' | 'top' |
+ *                              'south' | 'north' | 'east' | 'west', maxSize, title, scale })
+ *     → { png: Buffer, width, height, view }
+ *
+ * iso      isometric from the SOUTH-EAST (you see the top, the south "front" face and the east face)
+ * top      plan view, north up, east right, lighter = higher
+ * south    elevation seen from the south (front): east is to the RIGHT
+ * north    elevation seen from the north: east is to the LEFT
+ * east     elevation seen from the east: north is to the RIGHT
+ * west     elevation seen from the west: south is to the RIGHT
+ * sheet    iso + top + south + east on one image with captions, compass and size
+ */
+import { encodePng } from './png.js';
+import { textBitmap } from './font.js';
+import { blockColor, isOpaqueCube } from './colors.js';
+import { isAir } from '../core/blockstate.js';
+
+// ───────────────────────────── canvas ─────────────────────────────
+
+class Canvas {
+  constructor(w, h, bg = [255, 255, 255]) {
+    this.w = Math.max(1, Math.round(w));
+    this.h = Math.max(1, Math.round(h));
+    this.data = new Uint8ClampedArray(this.w * this.h * 4);
+    this.clear(bg);
+  }
+  clear([r, g, b]) {
+    const d = this.data;
+    for (let i = 0; i < d.length; i += 4) { d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255; }
+  }
+  blend(x, y, r, g, b, a = 1) {
+    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return;
+    const i = (y * this.w + x) * 4, d = this.data;
+    if (a >= 1) { d[i] = r; d[i + 1] = g; d[i + 2] = b; return; }
+    d[i] = d[i] + (r - d[i]) * a;
+    d[i + 1] = d[i + 1] + (g - d[i + 1]) * a;
+    d[i + 2] = d[i + 2] + (b - d[i + 2]) * a;
+  }
+  rect(x, y, w, h, [r, g, b], a = 1) {
+    const x0 = Math.max(0, Math.floor(x)), y0 = Math.max(0, Math.floor(y));
+    const x1 = Math.min(this.w, Math.floor(x + w)), y1 = Math.min(this.h, Math.floor(y + h));
+    for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) this.blend(xx, yy, r, g, b, a);
+  }
+  line(x0, y0, x1, y1, c, a = 1) {
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    for (;;) {
+      this.blend(x0, y0, c[0], c[1], c[2], a);
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x0 += sx; }
+      if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+  }
+  text(str, x, y, color = [30, 30, 30], scale = 1, { align = 'left' } = {}) {
+    const bm = textBitmap(String(str).toUpperCase(), { font: '5x7', proportional: true });
+    const ox = align === 'center' ? Math.round(x - (bm.width * scale) / 2) : align === 'right' ? Math.round(x - bm.width * scale) : Math.round(x);
+    for (const k of bm.set) {
+      const [px, py] = k.split(',').map(Number);
+      this.rect(ox + px * scale, Math.round(y) + py * scale, scale, scale, color);
+    }
+    return bm.width * scale;
+  }
+  textWidth(str, scale = 1) { return textBitmap(String(str).toUpperCase(), { font: '5x7', proportional: true }).width * scale; }
+  paste(src, dx, dy) {
+    for (let y = 0; y < src.h; y++) {
+      const ty = y + dy;
+      if (ty < 0 || ty >= this.h) continue;
+      for (let x = 0; x < src.w; x++) {
+        const tx = x + dx;
+        if (tx < 0 || tx >= this.w) continue;
+        const si = (y * src.w + x) * 4, ti = (ty * this.w + tx) * 4;
+        this.data[ti] = src.data[si]; this.data[ti + 1] = src.data[si + 1]; this.data[ti + 2] = src.data[si + 2]; this.data[ti + 3] = 255;
+      }
+    }
+  }
+  png() { return encodePng(this.w, this.h, this.data); }
+}
+
+const shade = (c, f) => [c[0] * f, c[1] * f, c[2] * f];
+
+// ───────────────────────────── voxel collection ─────────────────────────────
+
+function collect(structure) {
+  const b = structure.bounds();
+  if (!b) return null;
+  const vox = [];
+  structure.forEach((x, y, z, block) => { if (!isAir(block)) vox.push([x, y, z, block]); });
+  if (!vox.length) return null;
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (const [x, y, z] of vox) {
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  return { vox, min: [x0, y0, z0], max: [x1, y1, z1], size: [x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1] };
+}
+
+// ───────────────────────────── shapes ─────────────────────────────
+
+/** Sub-boxes (in 0..1 voxel units) for the isometric renderer. */
+function shapeBoxes(info) {
+  switch (info.shape) {
+    case 'slab-bottom': return [[0, 0, 0, 1, 0.5, 1]];
+    case 'slab-top': return [[0, 0.5, 0, 1, 1, 1]];
+    case 'thin': return [[0, 0, 0, 1, 0.125, 1]];
+    case 'slab-top-thin': return [[0, 0.8125, 0, 1, 1, 1]];
+    case 'cube-thin': return [[0, 0, 0, 1, 1, 0.1875]];
+    case 'post': return [[0.3125, 0, 0.3125, 0.6875, 1, 0.6875]];
+    case 'cross': return [[0.25, 0, 0.25, 0.75, 0.6875, 0.75]];
+    case 'door': return [[0.05, 0, 0.05, 0.95, 1, 0.95]];
+    case 'stairs': {
+      const top = info.props.half === 'top';
+      const base = top ? [0, 0.5, 0, 1, 1, 1] : [0, 0, 0, 1, 0.5, 1];
+      const [ya, yb] = top ? [0, 0.5] : [0.5, 1];
+      const f = info.props.facing ?? 'north';
+      const step = f === 'north' ? [0, ya, 0, 1, yb, 0.5] : f === 'south' ? [0, ya, 0.5, 1, yb, 1]
+        : f === 'east' ? [0.5, ya, 0, 1, yb, 1] : [0, ya, 0, 0.5, yb, 1];
+      return [base, step];
+    }
+    default: return [[0, 0, 0, 1, 1, 1]];
+  }
+}
+
+/** 4×4 coverage mask for orthographic views. view: 'top' | 'side'; axisU: world dir that +u maps to. */
+function coverage(info, view, uDir) {
+  const full = 0xffff;
+  const rows = (r0, r1) => { let m = 0; for (let r = r0; r < r1; r++) m |= 0xf << (r * 4); return m; };
+  const cols = (c0, c1, r0 = 0, r1 = 4) => { let m = 0; for (let r = r0; r < r1; r++) for (let c = c0; c < c1; c++) m |= 1 << (r * 4 + c); return m; };
+  if (view === 'top') {
+    if (info.shape === 'post' || info.shape === 'cross') return cols(1, 3, 1, 3);
+    return full;
+  }
+  switch (info.shape) {
+    case 'slab-bottom': return rows(2, 4);
+    case 'slab-top': return rows(0, 2);
+    case 'thin': return rows(3, 4);
+    case 'slab-top-thin': return rows(0, 1);
+    case 'post': return cols(1, 3);
+    case 'cross': return cols(1, 3, 1, 4);
+    case 'stairs': {
+      const top = info.props.half === 'top';
+      const f = info.props.facing ?? 'north';
+      const along = f === uDir ? 'right' : (OPP[f] === uDir ? 'left' : null);
+      const base = top ? rows(0, 2) : rows(2, 4);
+      if (!along) return full;
+      const [r0, r1] = top ? [2, 4] : [0, 2];
+      return base | (along === 'right' ? cols(2, 4, r0, r1) : cols(0, 2, r0, r1));
+    }
+    default: return full;
+  }
+}
+const OPP = { north: 'south', south: 'north', east: 'west', west: 'east' };
+
+// ───────────────────────────── isometric ─────────────────────────────
+
+function rasterizeQuad(pts) {
+  // pts: 4 [u,v] (float) convex, any winding → list of integer pixel offsets inside + edge flags
+  let umin = Infinity, umax = -Infinity, vmin = Infinity, vmax = -Infinity;
+  for (const [u, v] of pts) { umin = Math.min(umin, u); umax = Math.max(umax, u); vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); }
+  let area = 0;
+  for (let i = 0; i < 4; i++) { const [a, b] = pts[i], [c, d] = pts[(i + 1) % 4]; area += a * d - c * b; }
+  const sgn = area >= 0 ? 1 : -1;
+  const inside = (x, y) => {
+    for (let i = 0; i < 4; i++) {
+      const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % 4];
+      if (sgn * ((bx - ax) * (y - ay) - (by - ay) * (x - ax)) < -1e-9) return false;
+    }
+    return true;
+  };
+  const px = [];
+  const set = new Set();
+  for (let y = Math.floor(vmin); y < Math.ceil(vmax); y++) {
+    for (let x = Math.floor(umin); x < Math.ceil(umax); x++) {
+      if (inside(x + 0.5, y + 0.5)) { px.push(x, y); set.add(x * 100003 + y); }
+    }
+  }
+  const edge = [];
+  for (let i = 0; i < px.length; i += 2) {
+    const x = px[i], y = px[i + 1];
+    edge.push(!(set.has((x + 1) * 100003 + y) && set.has((x - 1) * 100003 + y) && set.has(x * 100003 + y + 1) && set.has(x * 100003 + y - 1)));
+  }
+  return { px: Int32Array.from(px), edge };
+}
+
+function makeSprites(s) {
+  const P = (dx, dy, dz) => [(dx - dz) * s, ((dx + dz) * s) / 2 - dy * s];
+  const cache = new Map();
+  return (box) => {
+    const key = box.join(',');
+    let sp = cache.get(key);
+    if (sp) return sp;
+    const [x0, y0, z0, x1, y1, z1] = box;
+    sp = {
+      top: rasterizeQuad([P(x0, y1, z0), P(x1, y1, z0), P(x1, y1, z1), P(x0, y1, z1)]),
+      east: rasterizeQuad([P(x1, y0, z0), P(x1, y1, z0), P(x1, y1, z1), P(x1, y0, z1)]),
+      south: rasterizeQuad([P(x0, y0, z1), P(x1, y0, z1), P(x1, y1, z1), P(x0, y1, z1)]),
+    };
+    cache.set(key, sp);
+    return sp;
+  };
+}
+
+/** Render the isometric (south-east) view into a new canvas. */
+function renderIso(structure, { maxW, maxH, bg, scale }) {
+  const c = collect(structure);
+  if (!c) return null;
+  const [sx, sy, sz] = c.size;
+  const margin = 18;
+  let s = scale ?? Math.floor(Math.min((maxW - 2 * margin) / (sx + sz), (maxH - 2 * margin) / ((sx + sz) / 2 + sy)));
+  s = Math.max(1, Math.min(32, s));
+  if (s > 2 && s % 2) s -= 1;
+  const W = (sx + sz) * s + 2 * margin, H = Math.ceil(((sx + sz) * s) / 2 + sy * s) + 2 * margin;
+  const cv = new Canvas(W, H, bg);
+  const [mx, my, mz] = c.min;
+  const ox = sz * s + margin, oy = sy * s + margin;
+  const proj = (X, Y, Z) => [ox + (X - Z) * s, oy + ((X + Z) * s) / 2 - Y * s];
+
+  // ground plane with a 1-block grid + compass letters
+  const g0 = proj(0, 0, 0), g1 = proj(sx, 0, 0), g2 = proj(sx, 0, sz), g3 = proj(0, 0, sz);
+  const ground = rasterizeQuad([g0, g1, g2, g3]);
+  for (let i = 0; i < ground.px.length; i += 2) cv.blend(ground.px[i], ground.px[i + 1], 0, 0, 0, 0.08);
+  if (s >= 4) {
+    for (let i = 0; i <= sx; i++) { const a = proj(i, 0, 0), b = proj(i, 0, sz); cv.line(a[0], a[1], b[0], b[1], [0, 0, 0], i % 10 === 0 ? 0.18 : 0.07); }
+    for (let k = 0; k <= sz; k++) { const a = proj(0, 0, k), b = proj(sx, 0, k); cv.line(a[0], a[1], b[0], b[1], [0, 0, 0], k % 10 === 0 ? 0.18 : 0.07); }
+  }
+  const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const compassLabels = () => {
+    const label = (x, y, t) => {
+      cv.rect(x - 5, y - 2, 11, 11, [255, 255, 255], 0.7);
+      cv.text(t, x, y, [40, 40, 90], 1, { align: 'center' });
+    };
+    // the south and east edges of the ground are in front, so label them in place…
+    const sMid = mid(g2, g3), eMid = mid(g1, g2);
+    label(sMid[0] - 12, sMid[1] + 8, 'S');
+    label(eMid[0] + 12, eMid[1] + 8, 'E');
+    // …and draw a compass rose in the top-left corner for all four directions
+    const cx = 34, cy = 30, L = 16;
+    const n = Math.hypot(2, 1);
+    const dirs = { N: [2 / n, -1 / n], E: [2 / n, 1 / n], S: [-2 / n, 1 / n], W: [-2 / n, -1 / n] };
+    for (const [t, [dx, dy]] of Object.entries(dirs)) {
+      cv.line(cx, cy, cx + dx * L, cy + dy * L, t === 'N' ? [200, 40, 40] : [60, 60, 90], 0.9);
+      label(Math.round(cx + dx * (L + 9)), Math.round(cy + dy * (L + 9)) - 3, t);
+    }
+  };
+
+  // occupancy lookup for culling
+  const key = (x, y, z) => `${x},${y},${z}`;
+  const occ = new Map();
+  for (const v of c.vox) occ.set(key(v[0], v[1], v[2]), v[3]);
+  const sprites = makeSprites(s);
+  // painter's order: far → near (camera at +x,+y,+z)
+  const order = c.vox.map((v, i) => [(v[0] - mx) + (v[1] - my) + (v[2] - mz), v[1], i]);
+  order.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const outline = s >= 6;
+  for (const [, , i] of order) {
+    const [x, y, z, block] = c.vox[i];
+    const info = blockColor(block);
+    if (info.a <= 0) continue;
+    const X = x - mx, Y = y - my, Z = z - mz;
+    const [ax, ay] = proj(X, Y, Z);
+    const boxes = shapeBoxes(info);
+    const cube = boxes.length === 1 && info.shape === 'cube';
+    for (const box of boxes.sort((p, q) => (p[0] + p[1] + p[2]) - (q[0] + q[1] + q[2]))) {
+      const sp = sprites(box);
+      for (const face of ['south', 'east', 'top']) {
+        if (cube) {
+          const n = face === 'top' ? occ.get(key(x, y + 1, z)) : face === 'east' ? occ.get(key(x + 1, y, z)) : occ.get(key(x, y, z + 1));
+          if (n && (isOpaqueCube(n) || (n === block && info.a < 1))) continue;
+        }
+        const base = face === 'top' ? info.top : shade(info.side, face === 'south' ? 0.82 : 0.64);
+        const { px, edge } = sp[face];
+        const ex = shade(base, 0.82);
+        for (let k = 0, e = 0; k < px.length; k += 2, e++) {
+          const col = outline && edge[e] ? ex : base;
+          cv.blend(Math.round(ax) + px[k], Math.round(ay) + px[k + 1], col[0], col[1], col[2], info.a);
+        }
+      }
+    }
+  }
+  compassLabels();
+  return { canvas: cv, scale: s, size: c.size };
+}
+
+// ───────────────────────────── orthographic ─────────────────────────────
+
+const VIEWS = {
+  // u axis, v axis (down), depth (nearer = larger), uDir (world direction of +u)
+  top: { u: (x, y, z, c) => x - c.min[0], v: (x, y, z, c) => z - c.min[2], depth: (x, y) => y, W: (c) => c.size[0], H: (c) => c.size[2], uDir: 'east', cov: 'top' },
+  south: { u: (x, y, z, c) => x - c.min[0], v: (x, y, z, c) => c.max[1] - y, depth: (x, y, z) => z, W: (c) => c.size[0], H: (c) => c.size[1], uDir: 'east', cov: 'side' },
+  north: { u: (x, y, z, c) => c.max[0] - x, v: (x, y, z, c) => c.max[1] - y, depth: (x, y, z) => -z, W: (c) => c.size[0], H: (c) => c.size[1], uDir: 'west', cov: 'side' },
+  east: { u: (x, y, z, c) => c.max[2] - z, v: (x, y, z, c) => c.max[1] - y, depth: (x) => x, W: (c) => c.size[2], H: (c) => c.size[1], uDir: 'north', cov: 'side' },
+  west: { u: (x, y, z, c) => z - c.min[2], v: (x, y, z, c) => c.max[1] - y, depth: (x) => -x, W: (c) => c.size[2], H: (c) => c.size[1], uDir: 'south', cov: 'side' },
+};
+
+function renderOrtho(structure, view, { maxW, maxH, bg, scale }) {
+  const c = collect(structure);
+  if (!c) return null;
+  const V = VIEWS[view];
+  const gw = V.W(c), gh = V.H(c);
+  const ml = 26, mt = 12, mr = 12, mb = 18;
+  let cell = scale ?? Math.floor(Math.min((maxW - ml - mr) / gw, (maxH - mt - mb) / gh));
+  cell = Math.max(1, Math.min(24, cell));
+  const sub = cell >= 8 ? 4 : 1;
+  const W = gw * cell + ml + mr, H = gh * cell + mt + mb;
+  const cv = new Canvas(W, H, bg);
+  cv.rect(ml, mt, gw * cell, gh * cell, [255, 255, 255], 0.55);
+  const depths = c.vox.map((v) => V.depth(v[0], v[1], v[2]));
+  let dmin = Infinity, dmax = -Infinity;
+  for (const d of depths) { if (d < dmin) dmin = d; if (d > dmax) dmax = d; }
+  const order = c.vox.map((v, i) => i).sort((a, b) => depths[a] - depths[b]);
+  const sc = cell / sub;
+  for (const i of order) {
+    const [x, y, z, block] = c.vox[i];
+    const info = blockColor(block);
+    if (info.a <= 0) continue;
+    const t = dmax === dmin ? 1 : (depths[i] - dmin) / (dmax - dmin);
+    const f = view === 'top' ? 0.45 + 0.55 * t : 0.55 + 0.45 * t;
+    const col = shade(view === 'top' ? info.top : info.side, f);
+    const u = V.u(x, y, z, c), v = V.v(x, y, z, c);
+    const mask = sub === 4 ? coverage(info, V.cov, V.uDir) : 0xffff;
+    for (let r = 0; r < sub; r++) {
+      for (let q = 0; q < sub; q++) {
+        if (sub === 4 && !(mask & (1 << (r * 4 + q)))) continue;
+        cv.rect(ml + u * cell + q * sc, mt + v * cell + r * sc, sc, sc, col, info.a);
+      }
+    }
+  }
+  // grid + ticks
+  const gridA = cell >= 6 ? 0.1 : 0;
+  for (let i = 0; i <= gw; i++) {
+    const X = ml + i * cell;
+    const strong = i % 10 === 0;
+    if (gridA || strong) cv.line(X, mt, X, mt + gh * cell, [0, 0, 0], strong ? 0.25 : gridA);
+  }
+  for (let j = 0; j <= gh; j++) {
+    const Y = mt + j * cell;
+    const strong = j % 10 === 0;
+    if (gridA || strong) cv.line(ml, Y, ml + gw * cell, Y, [0, 0, 0], strong ? 0.25 : gridA);
+  }
+  const tick = Math.max(1, Math.ceil(30 / cell / 5) * 5);
+  for (let i = 0; i < gw; i += tick) cv.text(String(i), ml + i * cell + cell / 2, mt + gh * cell + 5, [90, 90, 100], 1, { align: 'center' });
+  for (let j = 0; j < gh; j += tick) {
+    const label = view === 'top' ? j : gh - 1 - j;
+    cv.text(String(label), ml - 4, mt + j * cell + cell / 2 - 3, [90, 90, 100], 1, { align: 'right' });
+  }
+  return { canvas: cv, cell, grid: [gw, gh], margins: { ml, mt } };
+}
+
+// ───────────────────────────── public API ─────────────────────────────
+
+const BG_ISO = [178, 206, 234];
+const BG_PANEL = [238, 240, 244];
+const ISO_ROT = { iso: 0, 'iso-se': 0, 'iso-sw': 1, 'iso-nw': 2, 'iso-ne': 3 };
+
+function emptyImage(text = 'EMPTY') {
+  const cv = new Canvas(160, 60, BG_PANEL);
+  cv.text(text, 80, 26, [120, 120, 130], 1, { align: 'center' });
+  return cv;
+}
+
+/**
+ * @param {import('../core/structure.js').Structure} structure
+ * @param {{ view?: string, maxSize?: number, title?: string, scale?: number }} [opts]
+ */
+export function renderPreview(structure, opts = {}) {
+  const view = (opts.view ?? 'sheet').toLowerCase();
+  const maxSize = opts.maxSize ?? 1600;
+  let cv;
+  if (view in ISO_ROT) {
+    const s = ISO_ROT[view] ? structure.transformed({ rotate: ISO_ROT[view] * 90 }) : structure;
+    const r = renderIso(s, { maxW: maxSize, maxH: maxSize, bg: BG_ISO, scale: opts.scale });
+    cv = r ? r.canvas : emptyImage();
+  } else if (view in VIEWS) {
+    const r = renderOrtho(structure, view, { maxW: maxSize, maxH: maxSize, bg: BG_PANEL, scale: opts.scale });
+    cv = r ? r.canvas : emptyImage();
+    if (r) compass(cv, view);
+  } else if (view === 'sheet') {
+    cv = renderSheet(structure, { maxSize, title: opts.title ?? structure.name });
+  } else {
+    throw new Error(`Unknown view "${opts.view}" (sheet|iso|iso-ne|iso-nw|iso-sw|top|south|north|east|west)`);
+  }
+  return { png: cv.png(), width: cv.w, height: cv.h, view };
+}
+
+function compass(cv, view) {
+  const t = { top: 'N ↑', south: 'FROM SOUTH →E', north: 'FROM NORTH →W', east: 'FROM EAST →N', west: 'FROM WEST →S' }[view];
+  if (t) cv.text(t, cv.w - 4, 2, [60, 60, 120], 1, { align: 'right' });
+}
+
+function renderSheet(structure, { maxSize, title }) {
+  const c = collect(structure);
+  if (!c) return emptyImage();
+  const header = 30;
+  const totalW = Math.min(maxSize, 1600);
+  const isoMax = Math.round(totalW * 0.64);
+  const iso = renderIso(structure, { maxW: isoMax, maxH: isoMax, bg: BG_ISO });
+  const sideMax = totalW - iso.canvas.w - 12;
+  const panelH = Math.max(160, Math.round((iso.canvas.h - 30) / 3));
+  const views = [['top', 'TOP (NORTH UP)'], ['south', 'SOUTH ELEVATION (FRONT)'], ['east', 'EAST ELEVATION']];
+  const panels = views.map(([v, cap]) => {
+    const r = renderOrtho(structure, v, { maxW: Math.max(160, sideMax), maxH: panelH, bg: BG_PANEL });
+    if (v === 'top') compass(r.canvas, 'top');
+    return { r, cap };
+  });
+  const rightW = Math.max(...panels.map((p) => p.r.canvas.w), 200);
+  const rightH = panels.reduce((h, p) => h + p.r.canvas.h + 16, 0);
+  const W = iso.canvas.w + 8 + rightW + 4;
+  const H = header + Math.max(iso.canvas.h + 14, rightH + 4);
+  const cv = new Canvas(Math.max(W, 520), H, [250, 250, 252]);
+  // header
+  cv.rect(0, 0, cv.w, header, [40, 46, 58]);
+  const [sx, sy, sz] = c.size;
+  cv.text(`${title ?? 'structure'}`, 10, 8, [255, 255, 255], 2);
+  cv.text(`${sx}×${sy}×${sz} (W×H×D)  ${structure.count} BLOCKS  FRONT = SOUTH`, cv.w - 10, 11, [200, 210, 225], 1, { align: 'right' });
+  // iso
+  cv.text('ISO VIEW FROM SOUTH-EAST', 8, header + 4, [70, 70, 90]);
+  cv.paste(iso.canvas, 0, header + 14);
+  // right column
+  const rx = iso.canvas.w + 8;
+  let y = header + 4;
+  for (const { r, cap } of panels) {
+    cv.text(cap, rx + 2, y, [70, 70, 90]);
+    cv.paste(r.canvas, rx, y + 10);
+    y += r.canvas.h + 16;
+  }
+  return cv;
+}
+
+export { Canvas };

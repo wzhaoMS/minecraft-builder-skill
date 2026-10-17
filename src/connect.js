@@ -9,6 +9,12 @@ import { connectRcon } from './transport/rcon.js';
 import { DryRunTransport } from './transport/dry.js';
 
 export async function openTransport(cfg, { dryRun = false, log = () => {}, prefer = null } = {}) {
+  const t = await open(cfg, { dryRun, log, prefer });
+  t.serverKey = `${cfg.host}:${cfg.port}`;
+  return t;
+}
+
+async function open(cfg, { dryRun, log, prefer }) {
   if (dryRun) return new DryRunTransport({ version: cfg.version, log });
   const kind = prefer ?? cfg.transport ?? 'auto';
   const botCfg = {

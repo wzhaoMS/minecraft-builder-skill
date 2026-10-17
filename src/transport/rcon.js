@@ -161,6 +161,19 @@ export class RconTransport {
     return { text: r.messages.map((m) => m.text).join('\n'), errors: r.errors, messages: r.messages };
   }
 
+  /** Dimension (e.g. "minecraft:the_nether") for world commands; console commands default to the overworld. */
+  setDimension(id) {
+    if (id !== this.dimension) {
+      this.dimension = id;
+      this._forceloaded = null;
+    }
+  }
+
+  _inDim(cmd) {
+    const d = this.dimension;
+    return d && d !== 'minecraft:overworld' ? `execute in ${d} run ${cmd}` : cmd;
+  }
+
   async run(cmds, opts = {}) {
     const errors = [];
     let noops = 0, done = 0;
@@ -169,7 +182,7 @@ export class RconTransport {
       const retry = [];
       for (let i = 0; i < pending.length; i += this.pipeline) {
         const chunk = pending.slice(i, i + this.pipeline);
-        const results = await Promise.all(chunk.map((c) => this.client.command(c)));
+        const results = await Promise.all(chunk.map((c) => this.client.command(this._inDim(c))));
         results.forEach((text, j) => {
           const kind = classifyRconText(text);
           if (kind === 'retry' && attempt < (opts.retries ?? 4)) { retry.push(chunk[j]); return; }
@@ -191,35 +204,39 @@ export class RconTransport {
   /** Forceload the chunks covering an area (releasing the previous area) and wait until they're loaded. */
   async loadArea(area) {
     if (!this._forceloaded) {
-      const q = await this.client.command('forceload query');
+      const q = await this.client.command(this._inDim('forceload query'));
       this._forceloaded = new Set([...q.matchAll(/\[(-?\d+), (-?\d+)\]/g)].map((m) => `${m[1]},${m[2]}`));
     }
-    const key = `${area.x1},${area.z1},${area.x2},${area.z2}`;
+    const key = `${this.dimension}|${area.x1},${area.z1},${area.x2},${area.z2}`;
     if (this._currentArea === key) return true;
     await this.releaseAreas();
     this._currentArea = key;
     const cx1 = Math.floor(area.x1 / 16), cx2 = Math.floor(area.x2 / 16), cz1 = Math.floor(area.z1 / 16), cz2 = Math.floor(area.z2 / 16);
-    await this.client.command(`forceload add ${area.x1} ${area.z1} ${area.x2} ${area.z2}`);
+    await this.client.command(this._inDim(`forceload add ${area.x1} ${area.z1} ${area.x2} ${area.z2}`));
     for (let cx = cx1; cx <= cx2; cx++) for (let cz = cz1; cz <= cz2; cz++) {
       const k = `${cx},${cz}`;
-      if (!this._forceloaded.has(k)) this._added.add(k);
+      if (!this._forceloaded.has(k)) this._added.add(`${this.dimension ?? ''}|${k}`);
     }
+    // /forceload is asynchronous: poll until the corners report loaded.
     const probes = [[area.x1, area.z1], [area.x2, area.z2], [area.x1, area.z2], [area.x2, area.z1]];
+    const inDim = this.dimension && this.dimension !== 'minecraft:overworld' ? `execute in ${this.dimension} if loaded` : 'execute if loaded';
     const t0 = Date.now();
     while (Date.now() - t0 < 20_000) {
-      const res = await Promise.all(probes.map(([x, z]) => this.client.command(`execute if loaded ${x} 0 ${z}`)));
+      const res = await Promise.all(probes.map(([x, z]) => this.client.command(`${inDim} ${x} 0 ${z}`)));
       if (res.every((r) => /passed/i.test(r))) return true;
       await sleep(100);
     }
     return false;
   }
 
-  /** Remove the forceloads this transport added. */
+  /** Remove only the forceloads this transport added. */
   async releaseAreas() {
     this._currentArea = null;
     for (const k of this._added) {
-      const [cx, cz] = k.split(',').map(Number);
-      await this.client.command(`forceload remove ${cx * 16} ${cz * 16}`).catch(() => {});
+      const [d, c] = k.split('|');
+      const [cx, cz] = c.split(',').map(Number);
+      const cmd = `forceload remove ${cx * 16} ${cz * 16}`;
+      await this.client.command(d && d !== 'minecraft:overworld' ? `execute in ${d} run ${cmd}` : cmd).catch(() => {});
     }
     this._added.clear();
   }
@@ -227,10 +244,12 @@ export class RconTransport {
   async playerPose(name) {
     const pos = await this.client.command(`data get entity ${name} Pos`);
     const m = /\[(-?[\d.E-]+)d, (-?[\d.E-]+)d, (-?[\d.E-]+)d\]/.exec(pos);
-    if (!m) throw new TransportError(`Player "${name}" not found online (${pos.trim()})`, { code: 'NO_PLAYER', hint: 'Names are case-sensitive; check `/list`.' });
+    if (!m) throw new TransportError(`Player "${name}" not found online (${pos.trim()})`, { code: 'NO_PLAYER', hint: 'Names are case-sensitive; check `mcb where` (lists online players).' });
     const rot = await this.client.command(`data get entity ${name} Rotation`);
     const r = /\[(-?[\d.E-]+)f, (-?[\d.E-]+)f\]/.exec(rot);
-    return { x: Number(m[1]), y: Number(m[2]), z: Number(m[3]), yaw: r ? Number(r[1]) : 0, pitch: r ? Number(r[2]) : 0 };
+    const dim = await this.client.command(`data get entity ${name} Dimension`);
+    const d = /"((?:[a-z0-9_.-]+:)?[a-z0-9_./-]+)"/.exec(dim);
+    return { x: Number(m[1]), y: Number(m[2]), z: Number(m[3]), yaw: r ? Number(r[1]) : 0, pitch: r ? Number(r[2]) : 0, dimension: d ? d[1] : null };
   }
 
   readBlock() { return undefined; }

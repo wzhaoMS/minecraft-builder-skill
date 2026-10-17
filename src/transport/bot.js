@@ -299,9 +299,11 @@ export class BotTransport {
 
   /**
    * Run many commands in acknowledged batches (pipelined, `window` batches in flight).
+   * Batches are capped by count and by total affected volume (`weights`, e.g. fill volumes) so a
+   * single acknowledgement never covers an unbounded amount of server work.
    * Batches that hit unloaded chunks are retried after `ensureLoaded()`.
    * @param {string[]} cmds
-   * @param {{ onBatch?: (done:number, errors:object[]) => void, retries?: number, ensureLoaded?: () => Promise<void> }} [opts]
+   * @param {{ onBatch?: (done:number, errors:object[]) => void, retries?: number, ensureLoaded?: () => Promise<void>, weights?: number[] }} [opts]
    * @returns {Promise<{ sent: number, errors: object[], noops: number }>}
    */
   async run(cmds, opts = {}) {
@@ -309,7 +311,15 @@ export class BotTransport {
     let noops = 0;
     let done = 0;
     let pending = [];
-    for (let i = 0; i < cmds.length; i += this.batchSize) pending.push(cmds.slice(i, i + this.batchSize));
+    const maxVol = this.cfg.maxBatchVolume ?? 200_000;
+    let cur = [], vol = 0;
+    cmds.forEach((c, i) => {
+      const w = opts.weights?.[i] ?? 1;
+      if (cur.length && (cur.length >= this.batchSize || vol + w > maxVol)) { pending.push(cur); cur = []; vol = 0; }
+      cur.push(c);
+      vol += w;
+    });
+    if (cur.length) pending.push(cur);
     for (let attempt = 0; pending.length; attempt++) {
       const retry = [];
       const inflight = [];
@@ -343,9 +353,15 @@ export class BotTransport {
     return { sent: done, errors, noops };
   }
 
+  /** Dimension (e.g. "minecraft:the_nether") the bot should work in; applied on the next teleport. */
+  setDimension(id) {
+    this.dimension = id;
+  }
+
   /** Teleport the bot (flying, creative) and wait for the surrounding chunks to arrive. */
   async teleport(x, y, z, { waitChunks = true, area = null } = {}) {
-    await this.command(`tp @s ${x} ${y} ${z}`, { allowErrors: true });
+    const tp = `tp @s ${x} ${y} ${z}`;
+    await this.command(this.dimension ? `execute in ${this.dimension} run ${tp}` : tp, { allowErrors: true });
     try { this.bot.creative?.startFlying(); } catch { /* ignore */ }
     if (waitChunks) await this.waitForArea(area ?? { x1: x - 16, z1: z - 16, x2: x + 16, z2: z + 16 });
   }
@@ -386,17 +402,19 @@ export class BotTransport {
     return formatBlock({ name: b.name, props, nbt: null });
   }
 
-  /** Position + facing of an online player. */
+  /** Position, facing and dimension of an online player. */
   async playerPose(name) {
     const pos = await this.query(`data get entity ${name} Pos`);
-    if (pos.errors.length) {
-      throw new TransportError(`Player "${name}" not found online.`, { code: 'NO_PLAYER', hint: 'Names are case-sensitive; check `/list`.' });
+    if (pos.errors.length || !pos.text) {
+      throw new TransportError(`Player "${name}" not found online.`, { code: 'NO_PLAYER', hint: 'Names are case-sensitive; check `mcb where` (lists online players).' });
     }
     const m = /\[(-?[\d.E-]+)d, (-?[\d.E-]+)d, (-?[\d.E-]+)d\]/.exec(pos.text);
     const rot = await this.query(`data get entity ${name} Rotation`);
     const r = /\[(-?[\d.E-]+)f, (-?[\d.E-]+)f\]/.exec(rot.text);
+    const dim = await this.query(`data get entity ${name} Dimension`);
+    const d = /"((?:[a-z0-9_.-]+:)?[a-z0-9_./-]+)"/.exec(dim.text);
     if (!m) throw new TransportError(`Could not parse position of ${name}: ${pos.text}`, { code: 'PARSE' });
-    return { x: Number(m[1]), y: Number(m[2]), z: Number(m[3]), yaw: r ? Number(r[1]) : 0, pitch: r ? Number(r[2]) : 0 };
+    return { x: Number(m[1]), y: Number(m[2]), z: Number(m[3]), yaw: r ? Number(r[1]) : 0, pitch: r ? Number(r[2]) : 0, dimension: d ? d[1] : null };
   }
 
   async close() {

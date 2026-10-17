@@ -1,0 +1,82 @@
+/**
+ * Undo: restore what a build changed, from its snapshot.
+ *
+ * A snapshot stores the world before the build (whole affected box) and the state the build set
+ * (`after`). Undo only touches positions the build changed, and — when it can read the world —
+ * skips positions that were edited since (conflicts), reporting them instead of overwriting.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { Structure } from './core/structure.js';
+import { decodeSnapshot, captureRegion, listSnapshots } from './snapshot.js';
+import { executeBuild, blockMatches, BuildError, normalizeDimension, DIMENSIONS } from './build.js';
+import { withGamerules } from './gamerules.js';
+
+export function findSnapshot(stateDir, id) {
+  const snaps = listSnapshots(stateDir);
+  const snap = id ? snaps.find((s) => s.id === id || s.id.startsWith(id)) : snaps[0];
+  if (!snap) {
+    throw new BuildError(id ? `No undo snapshot "${id}"` : 'Nothing to undo', { code: 'NO_SNAPSHOT', hint: 'List snapshots with `mcb undo --list`.' });
+  }
+  return snap;
+}
+
+/**
+ * @returns {Promise<object>} report: { ok, id, restored, conflicts, conflictExamples, build }
+ */
+export async function undoBuild(transport, snapFile, { force = false, log = () => {}, onProgress, stateDir = null } = {}) {
+  const data = decodeSnapshot(fs.readFileSync(snapFile));
+  const id = path.basename(snapFile).replace(/\.json\.gz$/, '');
+  const dimension = data.meta?.dimension ? normalizeDimension(data.meta.dimension) : 'overworld';
+  transport.setDimension?.(DIMENSIONS[dimension].id);
+  const restore = new Structure({ name: `undo ${data.name ?? id}` });
+  const conflicts = [];
+  if (!data.after) {
+    // v1 snapshot: no record of what the build set — restore the whole box.
+    data.structure.forEach((x, y, z, b) => restore.set(x, y, z, b));
+  } else {
+    let current = null;
+    if (transport.canRead) {
+      current = (await withGamerules(transport, { sendCommandFeedback: false }, () => captureRegion(transport, data.box), { journalDir: stateDir })).structure;
+    } else if (!force) {
+      throw new BuildError('Undo needs the bot transport to check for edits made since the build', {
+        code: 'UNDO_NEEDS_READ', hint: 'Use --transport bot, or pass --force to restore without checking.',
+      });
+    }
+    data.after.forEach((x, y, z, after) => {
+      const before = data.structure.get(x, y, z);
+      if (before == null) return;
+      if (current && !force) {
+        const now = current.get(x, y, z);
+        if (now != null && !blockMatches(after, now) && !blockMatches(before, now, { strict: true })) {
+          conflicts.push({ pos: [x, y, z], expected: after, found: now });
+          return;
+        }
+      }
+      restore.set(x, y, z, before);
+    });
+  }
+  let build = null;
+  if (restore.count) {
+    build = await executeBuild({
+      structure: restore, transport, at: [0, 0, 0], anchor: 'origin', strict: true, undo: false, force: true,
+      fixMultiblocks: false, dimension, log, onProgress, stateDir,
+    });
+  }
+  return {
+    ok: (!build || build.ok) && conflicts.length === 0,
+    id,
+    restored: restore.count,
+    conflicts: conflicts.length,
+    conflictExamples: conflicts.slice(0, 10),
+    hint: conflicts.length ? 'These blocks were changed after the build and were left as they are; re-run with --force to restore them too.' : undefined,
+    build,
+  };
+}
+
+/** Move an applied snapshot out of the way so the next `undo` targets the previous build. */
+export function markApplied(snapFile) {
+  const applied = path.join(path.dirname(snapFile), 'applied');
+  fs.mkdirSync(applied, { recursive: true });
+  fs.renameSync(snapFile, path.join(applied, path.basename(snapFile)));
+}
