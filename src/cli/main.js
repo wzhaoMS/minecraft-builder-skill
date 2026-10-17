@@ -127,14 +127,16 @@ async function cmdInfo(flags, out) {
   const b = s.bounds();
   const plan = b ? planBuild(s, {}).stats : null;
   const counts = s.blockCounts();
+  const air = (counts.air ?? 0) + (counts.cave_air ?? 0) + (counts.void_air ?? 0);
   const res = {
     ok: lint.ok, name: s.name, size: b?.size ?? [0, 0, 0], bounds: b ? { min: b.min, max: b.max } : null, blocks: s.count,
+    solidBlocks: s.count - air, airBlocks: air,
     palette: Object.keys(counts).length, counts, plan,
     estimatedSeconds: plan ? Math.max(1, Math.round(plan.commands / 150)) : 0,
     lint: { errors: lint.errors, warnings: lint.warnings, fixes: lint.fixes },
   };
   out.result(res);
-  out.print(`${s.name}: ${res.size.join('×')} (W×H×D), ${s.count} blocks, ${res.palette} block types`);
+  out.print(`${s.name}: ${res.size.join('×')} (W×H×D), ${s.count - air} blocks${air ? ` + ${air} air (clears the inside)` : ''}, ${res.palette} block types`);
   if (b) out.print(`bounds ${fmtBox(b)}   plan: ${plan.commands} commands (${plan.fills} fill, ${plan.setblocks} setblock), ~${res.estimatedSeconds}s to build`);
   const top = Object.entries(counts).slice(0, 12);
   for (const [blk, n] of top) out.print(`  ${String(n).padStart(7)}  ${blk}`);
