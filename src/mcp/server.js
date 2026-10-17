@@ -144,7 +144,8 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
     return run;
   };
 
-  const text = (obj) => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] });
+  // compact JSON: tool results go straight into a model's context, where whitespace costs tokens
+  const text = (obj) => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj) }] });
 
   const handlers = {
     async mc_generators({ name } = {}) {
@@ -161,7 +162,7 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
       return {
         content: [
           { type: 'image', data: r.png.toString('base64'), mimeType: 'image/png' },
-          { type: 'text', text: JSON.stringify({ name: s.name, size: b?.size, bounds: b ? { min: b.min, max: b.max } : null, blocks: s.count, view, warnings: lint.warnings.map((w) => w.message), errors: lint.errors.flatMap((e) => e.errors) }, null, 2) },
+          { type: 'text', text: JSON.stringify({ name: s.name, size: b?.size, bounds: b ? { min: b.min, max: b.max } : null, blocks: s.count, view, warnings: lint.warnings.map((w) => w.message), errors: lint.errors.flatMap((e) => e.errors) }) },
         ],
       };
     },
@@ -256,7 +257,7 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
         protocolVersion: params?.protocolVersion ?? PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'minecraft-builder', version: PKG.version },
-        instructions: 'Build things in Minecraft Java Edition. Workflow: mc_generators / write an inline JSON blueprint → mc_validate → mc_preview (look at the image) → mc_build (near the player or at coordinates, verify on) → mc_undo if needed. Blueprint fronts face south; y=0 is the first layer above the ground.',
+        instructions: 'Build things in Minecraft Java Edition. Workflow: mc_where (find the player) → mc_generators or an inline JSON blueprint → mc_validate → mc_preview (look at the image) → mc_plan (read-only: where it lands, what it replaces) → mc_build (near a player — optionally side/gap — or at coordinates; verify is on) → tell the user the undo id; mc_undo {id} reverts exactly that build. Blueprint fronts face south (facing turns them); y=0 is the first layer above the ground. Build separate parts of a scene with separate mc_build calls so each can be undone alone.',
       };
     }
     if (method === 'ping') return {};
