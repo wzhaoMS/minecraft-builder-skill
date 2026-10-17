@@ -11,7 +11,7 @@ import { loadBlueprint } from '../io/blueprint.js';
 import { lintStructure } from '../core/lint.js';
 import { planBuild } from '../compile/plan.js';
 import { executeBuild, validateBuildOptions, dimensionLabel, normalizeDimension } from '../build.js';
-import { openTransport, onlinePlayers } from '../connect.js';
+import { openTransport, onlinePlayers, otherDimensionNote } from '../connect.js';
 import { listSnapshots, captureRegion, dropUnbuildableData } from '../snapshot.js';
 import { DEFAULT_MC_VERSION } from '../core/blockinfo.js';
 
@@ -74,7 +74,7 @@ const PLACEMENT_HELP = `WHERE IT GOES (pick one)
                         ~ is relative to --near's player: --at ~5,~,~-3
   --near <player>       next to a player, front facing them: in front of them by default,
                         --side north|east|south|west to put it on another side,
-                        --gap <n> blocks between them and the build (default 3)
+                        --gap <n> blocks between them and the build's bounding box (default 3)
   --facing <dir>        turn the build so its front (built facing south) faces dir
   --rotate 90|180|270   extra clockwise turn; --mirror x|z
   --dimension overworld|the_nether|the_end   (default: the --near player's, else the overworld)`;
@@ -398,6 +398,7 @@ async function cmdBuild(flags, out, { planOnly = false } = {}) {
     else if (o.dryRun && !o.near && !o.at) {
       o.at = [0, 0, 0];
     }
+    if (o.at && !o.dimension && !o.dryRun) await noteOtherDimension(o, cfg, transport);
     out.log(`${planOnly ? 'planning' : 'building'} "${s.name}" via ${transport.kind}${transport.version ? ` (server ${transport.version})` : ''}…`);
     const report = await executeBuild({
       structure: s, transport, ...o, version: cfg.version ?? transport.version,
@@ -465,6 +466,16 @@ async function resolveRelativeAt(flags, o, cfg, transport) {
   }
 }
 
+/**
+ * Absolute --at without --dimension means the overworld. When the player we work for (--near,
+ * "player" in the config, or else everyone online) is in another dimension, that is probably a
+ * mistake: say so in the report.
+ */
+async function noteOtherDimension(o, cfg, transport) {
+  const note = await otherDimensionNote(transport, o.near ?? cfg.player);
+  if (note) (o.notes ??= []).push(note);
+}
+
 async function poseOf(transport, player) {
   if (!player) throw Object.assign(new Error('Relative --at (~) needs --near <player> (or "player" in config)'), { exitCode: 2 });
   const p = await transport.playerPose(player);
@@ -478,7 +489,7 @@ async function poseOf(transport, player) {
 
 function printReport(r, out) {
   const secs = (r.durationMs / 1000).toFixed(1);
-  out.print(`${r.ok ? '✓' : '✗'} ${r.name}: ${r.voxels} blocks at ${r.box.slice(0, 3).join(',')} → ${r.box.slice(3).join(',')} (${facingNote(r)})`);
+  out.print(`${r.ok ? '✓' : '✗'} ${r.name}: ${r.voxels} blocks at ${r.box.slice(0, 3).join(',')} → ${r.box.slice(3).join(',')} in ${dimensionLabel(r.dimension)} (${facingNote(r)})`);
   out.print(`  ${r.commandsSent ?? r.plan.commands}/${r.plan.commands} commands sent (${r.skipped ? `${r.skipped} skipped as already built, ` : ''}${r.noops ?? 0} no-ops) in ${secs}s${r.blocksPerSecond ? `, ${r.blocksPerSecond} blocks/s` : ''}`);
   if (r.hand) out.print(`  hand mode: ${r.hand.placedByHand} placed by hand, ${r.hand.setblock} via /setblock, ${r.hand.corrected} state fixes`);
   for (const f of r.lint?.fixes ?? []) out.print(`  ✓ auto-fix: ${f.message} (${f.count}×)`);
@@ -739,6 +750,9 @@ async function cmdWhere(flags, out) {
     out.result({ ok: true, player: name, pos: [p.x, p.y, p.z], block, yaw: p.yaw, pitch: p.pitch, facing, dimension: p.dimension });
     out.print(`${name} at ${block.join(',')} (exact ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}) in ${p.dimension ?? 'the overworld'}, facing ${facing} (yaw ${p.yaw.toFixed(0)})`);
     out.print(`build in front of them:  mcb build <blueprint> --near ${name}`);
+    const dim = p.dimension ? String(p.dimension).replace(/^minecraft:/, '') : 'overworld';
+    // --at alone means the overworld: say so where it matters
+    out.print(`or at exact coordinates: mcb build <blueprint> --at ${block.join(',')}${dim !== 'overworld' ? ` --dimension ${dim}` : ''}`);
     return 0;
   } finally {
     await transport.close();

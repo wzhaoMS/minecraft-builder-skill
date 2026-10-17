@@ -24,6 +24,26 @@ export async function onlinePlayers(transport) {
   return m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
 }
 
+const DIM_LABEL = { overworld: 'the Overworld', the_nether: 'the Nether', the_end: 'the End' };
+
+/**
+ * A build at absolute coordinates without a dimension goes to the overworld. If the player it is
+ * for (`who`, or else everyone online) is in another dimension, return a warning saying so.
+ */
+export async function otherDimensionNote(transport, who = null, { flag = '--dimension' } = {}) {
+  if (!transport.playerPose) return null;
+  const names = who ? [who] : (await onlinePlayers(transport).catch(() => [])).filter((n) => n !== transport.username).slice(0, 5);
+  if (!names.length) return null;
+  const dims = [];
+  for (const n of names) {
+    const pose = await transport.playerPose(n).catch(() => null);
+    if (pose?.dimension) dims.push(String(pose.dimension).replace(/^minecraft:/, ''));
+  }
+  if (!dims.length || dims.some((d) => d === 'overworld' || d !== dims[0])) return null;
+  const subject = who ? `${who} is` : names.length > 1 ? `Everyone online (${names.join(', ')}) is` : `${names[0]} (online) is`;
+  return `${subject} in ${DIM_LABEL[dims[0]] ?? dims[0]}, but coordinates without ${flag} are in the Overworld — add ${flag} ${dims[0]} if the build should go there`;
+}
+
 /** `host:port` with loopback spellings unified, so snapshots/journals match regardless of how the server was addressed. */
 export function normalizeServerKey(key) {
   const s = String(key).trim().toLowerCase();

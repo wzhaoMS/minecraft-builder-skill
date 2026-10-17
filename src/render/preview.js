@@ -463,6 +463,25 @@ function renderOrtho(structure, view, { maxW, maxH, bg, scale, cutY = Infinity, 
       }
     }
   }
+  if (view === 'top' && cell >= 3) {
+    // height steps cast a shadow to the south-east (light from the north-west), so walls stand out
+    // from floors even when both are dark blocks
+    const hm = new Float64Array(gw * gh).fill(-Infinity);
+    for (let i = 0; i < n; i++) {
+      if (info[ids[i]].a <= 0) continue;
+      const k = (zs[i] - c.min[2]) * gw + (xs[i] - c.min[0]);
+      if (ys[i] > hm[k]) hm[k] = ys[i];
+    }
+    const w = Math.max(1, Math.round(cell / 4));
+    for (let v = 0; v < gh; v++) {
+      for (let u = 0; u < gw; u++) {
+        const h = hm[v * gw + u];
+        const X = ml + u * cell, Y = mt + v * cell;
+        if (u > 0 && hm[v * gw + u - 1] > h) cv.rect(X, Y, w, cell, [0, 0, 0], h === -Infinity ? 0.2 : 0.35);
+        if (v > 0 && hm[(v - 1) * gw + u] > h) cv.rect(X, Y, cell, w, [0, 0, 0], h === -Infinity ? 0.2 : 0.35);
+      }
+    }
+  }
   // grid (1-block lines when big enough, stronger lines on real coordinates that are multiples of 10) + labels
   const [u0, du] = V.uc(c), [v0, dv] = V.vc(c);
   // grid line k sits on the world plane between cells k-1 and k

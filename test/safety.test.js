@@ -474,6 +474,23 @@ test('snapshot ids are unique and never overwrite each other', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('coordinates without a dimension: a note when the player (or everyone online) is in another dimension', async () => {
+  const { otherDimensionNote } = await import('../src/connect.js');
+  const poses = { Steve: 'minecraft:the_nether', Alex: 'minecraft:the_nether', Bob: 'minecraft:overworld' };
+  const fake = (online) => ({
+    username: 'BuilderBot',
+    listPlayers: async () => ['BuilderBot', ...online],
+    playerPose: async (n) => (poses[n] ? { x: 0, y: 0, z: 0, yaw: 0, dimension: poses[n] } : Promise.reject(new Error('offline'))),
+  });
+  assert.match(await otherDimensionNote(fake([]), 'Steve'), /Steve is in the Nether, but coordinates without --dimension are in the Overworld — add --dimension the_nether/);
+  assert.equal(await otherDimensionNote(fake([]), 'Bob'), null);
+  assert.equal(await otherDimensionNote(fake([]), 'Nobody'), null);
+  assert.match(await otherDimensionNote(fake(['Steve', 'Alex'])), /Everyone online \(Steve, Alex\) is in the Nether/);
+  assert.equal(await otherDimensionNote(fake(['Steve', 'Bob'])), null, 'players in different worlds: no guess');
+  assert.equal(await otherDimensionNote(fake([])), null);
+  assert.match(await otherDimensionNote(fake([]), 'Steve', { flag: 'dimension' }), /add dimension the_nether/);
+});
+
 test('server keys: loopback spellings are the same server', () => {
   assert.equal(normalizeServerKey('localhost:25565'), '127.0.0.1:25565');
   assert.equal(normalizeServerKey('LOCALHOST'), '127.0.0.1:25565');

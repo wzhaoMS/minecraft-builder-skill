@@ -12,7 +12,7 @@ deterministic; `-p seed=N` varies the random details.
 
 ## `arch`
 
-Elliptical arch / gateway; the opening faces north-south, stairs smooth the curves
+Elliptical arch / gateway; the opening faces north-south, stairs smooth the curves. The opening is left untouched (walls behind it stay) unless carve=true makes it air — use carve to cut a gate through a wall
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -22,6 +22,7 @@ Elliptical arch / gateway; the opening faces north-south, stairs smooth the curv
 | `thickness` | int (1…32) | `2` | thickness of the arch ring |
 | `material` | block | `"stone_bricks"` | block to build with |
 | `smooth` | bool | `true` | smooth the curves with stairs (if the material has stairs) |
+| `carve` | bool | `false` | make the opening air, cutting through a wall placed earlier in parts (or in the world) |
 
 ```bash
 mcb preview gen:arch -o arch.png
@@ -422,6 +423,7 @@ Straight wall along X (front faces south), optional crenellations and pillars
 | `crenellations` | bool | `false` | battlements (merlons) along the top |
 | `pillarEvery` | int (0…64) | `0` | pillar every N blocks (0 = none) |
 | `pillar` | block | `""` | pillar block (default: the material's chiseled/pillar variant or the material) |
+| `pillarDepth` | int (0…3) | `1` | how far pillars stick out on each side; this makes the wall thickness+2×pillarDepth deep with its face moved back by pillarDepth — 0 keeps pillars flush (lines up with other walls) |
 
 ```bash
 mcb preview gen:wall -o wall.png

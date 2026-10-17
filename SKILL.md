@@ -64,14 +64,18 @@ file** (or in the current directory without one) — run `undo` with the same co
    from the south-east, top view with north up, south (front) and east elevations; `--view iso-nw`
    shows the back, `--view north|west|top` single views, `--facing east` shows it turned the way
    `build --facing east` will place it, `--cut <y>` hides everything above y to show floor plans
-   and interiors, `--size` caps the longest side in px).
+   and interiors (in the top view lighter = higher and height steps cast a shadow to the
+   south-east; elevations show openings best), `--size` caps the longest side in px).
    Fix and repeat until it looks right. `node bin/mcb.js info x.json` shows size, bounds, block
    counts and a command estimate.
 4. **Plan, then build** — `node bin/mcb.js plan x.json --near <player>` is read-only: where it will
    land, how many existing blocks it replaces (by type), whether it would destroy chests or other containers.
    Then `node bin/mcb.js build x.json --near <player> --verify` (or `--at x,y,z --facing south`).
    `--near` puts it in front of the player, front facing them; `--side west --gap 40` puts it 40
-   blocks to their west instead (still facing them). Add `--clear` to empty the area first (trees,
+   blocks to their west instead (still facing them; the gap is measured to the build's bounding
+   box, so parts sticking out — a tower in front of a gate — come closer). `--near` also builds in
+   the player's dimension; `--at x,y,z` alone means the **Overworld** — add `--dimension the_nether`
+   (`mcb where <player>` prints the exact `--at … --dimension …` to use). Add `--clear` to empty the area first (trees,
    terrain), `--ground grass_block` for a foundation layer, `--mode hand` to watch the bot place
    blocks one by one. `--dry-run` prints the commands without connecting (so it needs `--at`, not
    `--near`). `node bin/mcb.js build --help` lists every option.
@@ -118,7 +122,9 @@ save, but prefer to run other commands after stopping it.
 
 * +X = east, +Z = south, +Y = up. Overworld height −64…319; default superflat ground surface is y = −61
   (players stand at y = −60).
-* Blueprint `y = 0` is the first layer **above** the ground; negative y goes underground.
+* Blueprint `y = 0` is the first layer **above** the ground; negative y goes underground. A floor
+  laid at y = 0 therefore sits one block above the surrounding terrain (a step at the door): put
+  floors at y = −1 to replace the top ground layer and keep them flush.
 * A blueprint's **front faces south (+Z)**: put doors, facades and text on the south side.
   `--facing north|east|south|west` rotates the build (block states too). `--near <player>` places
   it in front of them, front facing them.
@@ -184,7 +190,7 @@ Full spec: [docs/blueprint-format.md](docs/blueprint-format.md).
 | `city` | whole districts | `width=160 depth=160 blockSize=22 streetWidth=5 maxHeight=90 parks=0.15 highway` |
 | `tree` | landscaping | `type=oak\|birch\|spruce\|jungle\|acacia\|dark_oak\|cherry\|pale_oak\|mangrove\|azalea height=0 (auto)` |
 | `road` / `bridge` | infrastructure | road: `length=32 width=7 axis=x\|z lamps=12`; bridge: `length=24 style=arch\|beam\|suspension clearance` (deck at y=0, arches/piers go `clearance` blocks below — span a river or gap; on a superflat world raise `--at` y) |
-| `fountain` / `arch` / `wall` | plazas, gates, walls | `radius=4`; `width=9 height=8`; `width=10 height=5 crenellations` |
+| `fountain` / `arch` / `wall` | plazas, gates, walls | `radius=4`; `width=9 height=8 carve` (carve makes the opening air, cutting a gate through a wall placed before it in `parts`); `width=10 height=5 crenellations pillarEvery=4` (pillars stick out 1 block on each side — `pillarDepth=0` keeps them flush so walls line up) |
 | `lighthouse` `windmill` `obelisk` `lamppost` `bench` | landmarks, street furniture | see `mcb generators <name>` |
 | `text` | signs, logos, labels | `text=HELLO block=gold_block font=5x7\|3x5 scale=1 facing=south plane=vertical\|flat background` |
 | `pixelart` | images → blocks | `image=<png/jpg> width=64 palette=concrete\|wool\|terracotta\|concrete+wool\|full dither plane` — use `dither=false` for logos/screenshots with flat colours (dithering speckles them) |

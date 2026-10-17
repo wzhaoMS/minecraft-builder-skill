@@ -214,6 +214,25 @@ describe('v1 blueprint compatibility', () => {
     assert.equal(s.count, 50);
   });
 
+  test('wall pillars stick out pillarDepth blocks on each side (0 = flush, so walls line up)', () => {
+    assert.deepEqual(runGenerator('wall', { width: 13, height: 6, pillarEvery: 4, material: 'stone_bricks' }).bounds().size, [13, 7, 3]);
+    const flush = runGenerator('wall', { width: 13, height: 6, pillarEvery: 4, pillarDepth: 0, material: 'stone_bricks' });
+    assert.deepEqual(flush.bounds().size, [13, 6, 1]);
+    assert.notEqual(flush.get(4, 2, 0), 'stone_bricks', 'pillar block in line with the wall');
+  });
+
+  test('arch carve=true cuts its opening (air), so it makes a gate in a wall placed before it', () => {
+    const plain = runGenerator('arch', { width: 7, height: 6, depth: 1 });
+    assert.equal(plain.get(3, 1, 0), null, 'opening left untouched by default');
+    const carved = runGenerator('arch', { width: 7, height: 6, depth: 1, carve: true });
+    assert.equal(carved.get(3, 1, 0), 'air');
+    assert.deepEqual(carved.bounds().size, plain.bounds().size);
+    const wall = new Structure().fill(0, 0, 0, 10, 6, 0, 'cobblestone');
+    wall.place(carved, 2, 0, 0);
+    assert.equal(wall.get(5, 1, 0), 'air', 'gate cut through the wall');
+    assert.equal(wall.get(0, 1, 0), 'cobblestone');
+  });
+
   test('house {width, depth, height, wall, roof, floor}', () => {
     const s = runGenerator('house', { width: 8, depth: 8, height: 5, wall: 'white_concrete', roof: 'spruce_planks', floor: 'oak_planks' });
     const counts = s.blockCounts();

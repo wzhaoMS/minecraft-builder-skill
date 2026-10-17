@@ -3,7 +3,7 @@ import { materialFamily, stairs } from './helpers.js';
 /** Free-standing arch (elliptical ring) in the X-Y plane, extruded `depth` blocks along Z. */
 export default {
   name: 'arch',
-  description: 'Elliptical arch / gateway; the opening faces north-south, stairs smooth the curves',
+  description: 'Elliptical arch / gateway; the opening faces north-south, stairs smooth the curves. The opening is left untouched (walls behind it stay) unless carve=true makes it air — use carve to cut a gate through a wall',
   params: {
     width: { type: 'int', default: 9, min: 3, max: 128, description: 'outer width along X' },
     height: { type: 'int', default: 8, min: 2, max: 128, description: 'outer height' },
@@ -11,6 +11,7 @@ export default {
     thickness: { type: 'int', default: 2, min: 1, max: 32, description: 'thickness of the arch ring' },
     material: { type: 'block', default: 'stone_bricks', description: 'block to build with' },
     smooth: { type: 'bool', default: true, description: 'smooth the curves with stairs (if the material has stairs)' },
+    carve: { type: 'bool', default: false, description: 'make the opening air, cutting through a wall placed earlier in parts (or in the world)' },
   },
   build(s, p) {
     const W = p.width, H = p.height, t = Math.min(p.thickness, Math.floor((W - 1) / 2), H - 1);
@@ -47,6 +48,7 @@ export default {
             block = stairs(p.material, out < 0 ? 'east' : 'west');
           }
         }
+        if (!block && p.carve && opening(x, y) && y < H) block = 'air';
         if (block) for (let z = 0; z < p.depth; z++) s.set(x, y, z, block);
       }
     }

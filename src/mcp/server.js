@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import readline from 'node:readline';
 import { resolveConfig, stateDir } from '../config.js';
-import { openTransport } from '../connect.js';
+import { openTransport, otherDimensionNote } from '../connect.js';
 import { loadBlueprint, fromJson } from '../io/blueprint.js';
 import { lintStructure } from '../core/lint.js';
 import { executeBuild } from '../build.js';
@@ -182,10 +182,16 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
         tr = await getTransport();
       }
       const near = a.near ?? (a.at ? undefined : cfg.player ?? undefined);
+      // coordinates without a dimension mean the overworld — flag it when the player is elsewhere
+      const notes = [];
+      if (a.at && !a.dimension && !a.dryRun) {
+        const note = await otherDimensionNote(tr, a.near ?? cfg.player ?? null, { flag: 'dimension' });
+        if (note) notes.push(note);
+      }
       const report = await executeBuild({
         structure: s, transport: tr, at: a.at ?? (a.dryRun && !near ? [0, 0, 0] : undefined), near, side: a.side, gap: a.gap, facing: a.facing, anchor: a.anchor,
         clear: !!a.clear, ground: a.ground, verify: a.verify !== false, dryRun: !!a.dryRun, mode: a.mode ?? 'fill',
-        dimension: a.dimension, force: !!a.force, planOnly: !!a.planOnly,
+        dimension: a.dimension, force: !!a.force, planOnly: !!a.planOnly, notes,
         stateDir: stateDir(cfg), version: cfg.version ?? tr.version, log,
       });
       if (report.commands) report.commands = report.commands.slice(0, 200);
