@@ -73,7 +73,7 @@ design guidance and troubleshooting. Then just ask: *"build me a medieval castle
 | `mcb generators [name]` | List generators / show a generator's parameters |
 | `mcb info <blueprint>` | Size, block counts, command plan, time estimate, lint warnings |
 | `mcb validate <blueprint>` | Check every block state against Minecraft data; suggest fixes for typos |
-| `mcb preview <blueprint> -o x.png` | Render iso / top / elevation views to a PNG |
+| `mcb preview <blueprint> -o x.png` | Render iso / top / elevation views to a PNG (`--view`, `--cut <y>` for floor plans and interiors) |
 | `mcb plan <blueprint> --at x,y,z \| --near <player>` | Read-only: where it lands, what it replaces (incl. chests/signs), commands needed |
 | `mcb build <blueprint> --at x,y,z \| --near <player>` | Build it (`--facing`, `--rotate`, `--mirror`, `--clear`, `--ground`, `--verify`, `--strict`, `--mode fill\|layered\|hand`, `--dimension`, `--dry-run`) |
 | `mcb watch <blueprint> --at …` | Rebuild live every time you save the file (only differences are sent; removed parts are restored) |

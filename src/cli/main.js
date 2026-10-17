@@ -28,7 +28,7 @@ DESIGN
   generators                         List built-in generators and their params
   info <blueprint> [-p k=v]          Size, block counts, command plan, lint warnings
   validate <blueprint>               Check block names/states against Minecraft (exit 1 on errors)
-  preview <blueprint> [-o out.png] [--view sheet|iso|iso-nw|top|south|north|east|west] [--size <max px>]
+  preview <blueprint> [-o out.png] [--view sheet|iso|iso-nw|top|south|north|east|west] [--size <max px>] [--cut <y>]
   export <blueprint> -o <file.schem|.nbt|.json|.mcfunction|.png>   |   --datapack <dir> [--name n] [--at x,y,z]
   generate <generator> [-p k=v]... -o <file>           Run a generator and save the result
 
@@ -178,7 +178,10 @@ async function cmdPreview(flags, out) {
   const { renderPreview } = await import('../render/preview.js');
   const view = flags.view ?? 'sheet';
   const file = flags.out && flags.out !== true ? flags.out : `${(s.name || 'preview').replace(/[^\w.-]+/g, '_')}${view === 'sheet' ? '' : '-' + view}.png`;
-  const r = renderPreview(s, { view, maxSize: flags.size ? Number(flags.size) : undefined, title: s.name });
+  const r = renderPreview(s, {
+    view, maxSize: flags.size ? Number(flags.size) : undefined, title: s.name,
+    cutaway: flags.cut !== undefined && flags.cut !== true ? { y: Number(flags.cut) } : undefined,
+  });
   fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   fs.writeFileSync(file, r.png);
   const b = s.bounds();

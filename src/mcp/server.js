@@ -54,7 +54,8 @@ export const TOOLS = [
       properties: {
         blueprint: blueprintSchema,
         params: { type: 'object', description: 'Generator / JS blueprint params' },
-        view: { type: 'string', enum: ['sheet', 'iso', 'iso-nw', 'top', 'south', 'north', 'east', 'west'], default: 'sheet' },
+        view: { type: 'string', enum: ['sheet', 'iso', 'iso-nw', 'iso-ne', 'iso-sw', 'top', 'south', 'north', 'east', 'west'], default: 'sheet' },
+        cutY: { type: 'integer', description: 'Hide everything above this y (floor plans / interiors)' },
       },
       required: ['blueprint'],
     },
@@ -146,16 +147,16 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
       const list = listGenerators().filter((g) => !name || g.name === name).map((g) => ({ name: g.name, description: g.description, params: g.params }));
       return text(list);
     },
-    async mc_preview({ blueprint, params, view = 'sheet' }) {
+    async mc_preview({ blueprint, params, view = 'sheet', cutY }) {
       const s = await loadAny(blueprint, params);
       const lint = lintStructure(s, { version: cfg.version ?? DEFAULT_MC_VERSION });
       const { renderPreview } = await import('../render/preview.js');
-      const r = renderPreview(s, { view, title: s.name });
+      const r = renderPreview(s, { view, title: s.name, cutaway: Number.isFinite(cutY) ? { y: cutY } : undefined });
       const b = s.bounds();
       return {
         content: [
           { type: 'image', data: r.png.toString('base64'), mimeType: 'image/png' },
-          { type: 'text', text: JSON.stringify({ name: s.name, size: b?.size, blocks: s.count, view, warnings: lint.warnings.map((w) => w.message), errors: lint.errors.flatMap((e) => e.errors) }, null, 2) },
+          { type: 'text', text: JSON.stringify({ name: s.name, size: b?.size, bounds: b ? { min: b.min, max: b.max } : null, blocks: s.count, view, warnings: lint.warnings.map((w) => w.message), errors: lint.errors.flatMap((e) => e.errors) }, null, 2) },
         ],
       };
     },
