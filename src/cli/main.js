@@ -93,7 +93,7 @@ WHAT HAPPENS
   --mode fill|layered|hand   fill (fast, default) · layered (one block at a time, --bps) · hand
                         (the bot places blocks visibly)
   --strict              exact block states, no neighbour updates
-  --force               allow destroying chests/signs/containers and other refusals
+  --force               allow destroying chests and other containers (and other refusals)
   --no-undo             skip the undo snapshot (the container check still runs)
   --echo                keep op command echo on (it is muted during builds by default)
   --dry-run             print the commands without connecting (needs --at)
@@ -102,7 +102,7 @@ WHAT HAPPENS
 Prints an undo command; --json prints a mcb.build-report/1 object.`,
   plan: `mcb plan <blueprint> (--at x,y,z | --near <player>) [build options]
 Read-only: where the build would land (world box, facing, dimension), how many existing blocks it
-would replace (by type), whether it would destroy chests/signs, and how many commands it needs.
+would replace (by type), whether it would destroy chests or other containers, and how many commands it needs.
 Takes the same options as build.
 
 ${PLACEMENT_HELP}`,

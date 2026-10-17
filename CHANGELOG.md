@@ -41,6 +41,8 @@ build → verify → undo loop. Tested end-to-end against Paper 1.21.11 (locally
   events with `--json`.
 - The bot reads player positions and gamerules through `/tellraw`, so servers with
   `send_command_feedback=false` work.
+- Snapshots and undo keep sign text, banner patterns and player heads (what the server shares with
+  clients), so signs can be built over and restored; a rebuild with new sign text updates it.
 - Unit tests (274, incl. an in-memory server for safety regressions), end-to-end tests against a
   real server (14, incl. a Nether build/undo and a bot that logs in inside another world), GitHub
   Actions CI on Windows/macOS/Linux × Node 22/24 plus an e2e job.

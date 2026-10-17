@@ -13,6 +13,7 @@
 import { createRequire } from 'node:module';
 import { translateKey, classifyKey, echoedCommand, explainKey } from './feedback.js';
 import { formatBlock } from '../core/blockstate.js';
+import { blockEntitySnbt } from '../io/formats/nbt-util.js';
 
 const require = createRequire(import.meta.url);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -505,6 +506,19 @@ export class BotTransport {
   get readTileSize() {
     const vd = Math.min(this.bot.game?.serverViewDistance ?? 8, 12);
     return vd >= 8 ? 128 : 64;
+  }
+
+  /**
+   * Block-entity data the client has for a position (sign text, banner patterns, head profiles…)
+   * as SNBT, or null. Container contents are never sent to clients, so they can't be read.
+   */
+  readBlockEntitySnbt(x, y, z) {
+    if (!this.hasChunk(x, z)) return null;
+    const col = this.bot.world.getColumn(x >> 4, z >> 4);
+    let be;
+    try { be = col?.getBlockEntity({ x: x & 15, y, z: z & 15 }); } catch { return null; }
+    if (!be) return null;
+    return blockEntitySnbt(be.value ?? be).snbt ?? null;
   }
 
   /**

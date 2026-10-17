@@ -9,6 +9,9 @@ import crypto from 'node:crypto';
 import { Structure } from './core/structure.js';
 import { splitBox } from './compile/plan.js';
 
+/** Blocks whose block-entity data the server shares with clients (text, patterns, profiles, sherds). */
+const CLIENT_BLOCK_ENTITY = /^[a-z0-9_:]*(_sign|_banner|_skull|_head|decorated_pot)(\[|$)/;
+
 /**
  * Read every block in `box` ([x1,y1,z1,x2,y2,z2]) via a transport that can read (bot).
  * @returns {Promise<{ structure: Structure, unknown: number }>}
@@ -37,7 +40,13 @@ export async function captureRegion(transport, box, { tile = transport.readTileS
             b = transport.readBlock(x, y, z);
           }
           if (b === undefined) { unknown++; continue; }
-          s.set(x, y, z, b === 'cave_air' || b === 'void_air' ? 'air' : b);
+          if (b === 'cave_air' || b === 'void_air') b = 'air';
+          // keep what the client knows of block entities (sign text, banners, heads) with the block
+          else if (transport.readBlockEntitySnbt && CLIENT_BLOCK_ENTITY.test(b) && !b.startsWith('piston_head')) {
+            const nbt = transport.readBlockEntitySnbt(x, y, z);
+            if (nbt) b += nbt;
+          }
+          s.set(x, y, z, b);
         }
       }
     }

@@ -341,6 +341,15 @@ test('undo drains liquids before taking their container down, and puts grass bac
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('block data in blueprints: a sign with different text is not "already built"', async () => {
+  const { nbtSatisfied } = await import('../src/build.js');
+  const world = 'oak_sign[rotation=0,waterlogged=false]{front_text:{has_glowing_text:0b,color:"black",messages:["Hello","","",""]},is_waxed:0b}';
+  assert.equal(nbtSatisfied('oak_sign[rotation=0]{front_text:{messages:["Hello","","",""]}}', world), true, 'subset of what the server reports');
+  assert.equal(nbtSatisfied('oak_sign[rotation=0]{front_text:{messages:["Bye","","",""]}}', world), false);
+  assert.equal(nbtSatisfied('oak_sign[rotation=0]{front_text:{messages:["Hello","","",""]}}', 'oak_sign[rotation=0]'), false, 'unknown → send again');
+  assert.equal(nbtSatisfied('oak_sign[rotation=0]', world), true, 'no data asked for');
+});
+
 test('snapshot ids are unique and never overwrite each other', () => {
   const ids = new Set(Array.from({ length: 200 }, () => newSnapshotId('same name')));
   assert.equal(ids.size, 200);

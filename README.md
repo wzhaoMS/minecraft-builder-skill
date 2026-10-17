@@ -27,7 +27,7 @@ node bin/mcb.js undo <id>                                   # …and is gone aga
 | **See before you build** | `mcb preview` renders an isometric view, a top view (north up) and front/side elevations into one PNG — agents (and humans) catch mistakes before touching the world. `mcb plan` says exactly where it lands and what it would replace. |
 | **Fast** | Voxels are merged into the fewest `/fill` boxes: a 500-block cottage is ~70 commands, the 445k-block Georgia Tech campus scene builds **and verifies** in about 2 minutes. |
 | **Correct** | Block states rotate with the build, doors/beds get both halves, leaves don't decay, torches/plants are placed after their supports, fluids last. `--verify` reads every block back and repairs mismatches. |
-| **Safe** | Nothing changes until the blueprint is valid and an undo snapshot is taken; chests/signs are never overwritten without `--force`; `mcb undo` restores what the build changed and leaves later edits alone. Rebuilding only changes what differs. Kicked mid-build? It reconnects and continues. Op command echo is muted and restored, even after a crash. |
+| **Safe** | Nothing changes until the blueprint is valid and an undo snapshot is taken; chests and other containers are never overwritten without `--force` (sign text is saved and restored); `mcb undo` restores what the build changed and leaves later edits alone. Rebuilding only changes what differs. Kicked mid-build? It reconnects and continues. Op command echo is muted and restored, even after a crash. |
 | **Works anywhere** | Windows, macOS, Linux. Bot (mineflayer) or RCON transport, any dimension. Single-player worlds via generated data packs. A fresh Paper server in one command, Java auto-install optional. |
 | **Agent-first** | [`SKILL.md`](SKILL.md) teaches an agent the workflow; every command has `--json` output and errors come with a stable `code` and a concrete `hint:`; `mcb doctor` diagnoses setups; `mcb mcp` exposes everything as MCP tools (with preview images). |
 
@@ -74,7 +74,7 @@ design guidance and troubleshooting. Then just ask: *"build me a medieval castle
 | `mcb info <blueprint>` | Size, block counts, command plan, time estimate, lint warnings |
 | `mcb validate <blueprint>` | Check every block state against Minecraft data; suggest fixes for typos |
 | `mcb preview <blueprint> -o x.png` | Render iso / top / elevation views to a PNG (`--view`, `--cut <y>` for floor plans and interiors) |
-| `mcb plan <blueprint> --at x,y,z \| --near <player>` | Read-only: where it lands, what it replaces (incl. chests/signs), commands needed |
+| `mcb plan <blueprint> --at x,y,z \| --near <player>` | Read-only: where it lands, what it replaces (incl. containers), commands needed |
 | `mcb build <blueprint> --at x,y,z \| --near <player>` | Build it (`--facing`, `--side`/`--gap` around a player, `--rotate`, `--mirror`, `--clear`, `--ground`, `--verify`, `--strict`, `--mode fill\|layered\|hand`, `--dimension`, `--dry-run`); `mcb build --help` for all options |
 | `mcb watch <blueprint> --at …` | Rebuild live every time you save the file (only differences are sent; removed parts are restored); one undo id per session, resumable, NDJSON events with `--json` |
 | `mcb undo [id\|file] [--list] [--force] [--any-server]` | Restore what a build changed; blocks edited since (or unreadable) are left alone and listed |

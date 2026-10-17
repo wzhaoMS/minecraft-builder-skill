@@ -37,7 +37,7 @@ const buildProperties = {
   clear: { type: 'boolean', description: 'Empty the area (+2 blocks margin) first' },
   ground: { type: 'string', description: 'Block for a foundation layer under the footprint' },
   verify: { type: 'boolean', default: true },
-  force: { type: 'boolean', description: 'Allow overwriting chests/signs/other blocks whose contents undo cannot restore' },
+  force: { type: 'boolean', description: 'Allow overwriting chests and other blocks whose contents undo cannot restore' },
   dryRun: { type: 'boolean' },
   mode: { type: 'string', enum: ['fill', 'layered', 'hand'] },
 };

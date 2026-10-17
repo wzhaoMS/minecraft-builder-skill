@@ -19,6 +19,7 @@ import { resolvePlacement } from './placement.js';
 import { captureRegion, saveSnapshot, newSnapshotId } from './snapshot.js';
 import { withGamerules, recoverGamerules, getGamerule } from './gamerules.js';
 import { defaultProps } from './core/blockinfo.js';
+import { parseSnbt } from './io/formats/nbt-util.js';
 
 export const REPORT_SCHEMA = 'mcb.build-report/1';
 
@@ -55,7 +56,7 @@ const STAIR_SHAPE_RE = /_stairs$/;
 const IMPLICIT_DYNAMIC = (name, k) => DYNAMIC_PROPS.has(k) || (k === 'shape' && /(_stairs|rail)$/.test(name)) || (k === 'type' && /chest$/.test(name));
 
 // Blocks whose contents (items, text, records, bees…) an undo snapshot cannot restore.
-const CONTENT_RE = /(^chest$|^trapped_chest$|^barrel$|shulker_box$|^furnace$|^blast_furnace$|^smoker$|^hopper$|^dispenser$|^dropper$|^brewing_stand$|^lectern$|_sign$|^jukebox$|^chiseled_bookshelf$|^decorated_pot$|^crafter$|^beehive$|^bee_nest$|spawner$|^vault$|command_block$|_shelf$)/;
+const CONTENT_RE = /(^chest$|^trapped_chest$|^barrel$|shulker_box$|^furnace$|^blast_furnace$|^smoker$|^hopper$|^dispenser$|^dropper$|^brewing_stand$|^lectern$|^jukebox$|^chiseled_bookshelf$|^decorated_pot$|^crafter$|^beehive$|^bee_nest$|spawner$|^vault$|command_block$|_shelf$)/;
 export const holdsContents = (block) => block != null && CONTENT_RE.test(blockName(block));
 
 /**
@@ -122,13 +123,46 @@ export const DECAYS_UNDER_COVER = new Set(['grass_block', 'mycelium', 'podzol', 
 /**
  * `want` at x,y,z (target) is satisfied by world block `cur`, allowing for decay under cover: the
  * build's own block above it, or (where the build leaves the block above alone) whatever the world
- * already has there — another build's house, a player's wall.
+ * already has there — another build's house, a player's wall. Block data the blueprint asks for
+ * (sign text, banner patterns…) must be there too, so a changed text is never "already built".
  */
 function alreadyThere(want, cur, x, y, z, target, world) {
-  if (blockMatches(want, cur, { strict: true })) return true;
+  if (blockMatches(want, cur, { strict: true })) return nbtSatisfied(want, cur);
   if (!DECAYS_UNDER_COVER.has(blockName(want)) || blockName(cur) !== 'dirt' || !target) return false;
   const above = target.get(x, y + 1, z) ?? world?.get(x, y + 1, z);
   return above != null && !isAir(above);
+}
+
+/** Does the world block carry (at least) the NBT the wanted block specifies? */
+export function nbtSatisfied(want, cur) {
+  const w = nbtPart(want);
+  if (!w) return true;
+  const c = nbtPart(cur);
+  if (!c) return false; // unknown (not readable): send it again rather than assume
+  if (w === c) return true;
+  try {
+    return tagSubset(parseSnbt(w), parseSnbt(c));
+  } catch {
+    return false;
+  }
+}
+
+const nbtPart = (block) => {
+  const i = String(block).indexOf('{');
+  return i < 0 ? null : String(block).slice(i);
+};
+
+function tagSubset(a, b) {
+  if (!a || !b) return false;
+  if (a.type === 'compound') {
+    if (b.type !== 'compound') return false;
+    return Object.entries(a.value).every(([k, v]) => tagSubset(v, b.value[k]));
+  }
+  if (a.type === 'list') {
+    if (b.type !== 'list' || a.value.value.length !== b.value.value.length) return false;
+    return a.value.value.every((v, i) => tagSubset({ type: a.value.type, value: v }, { type: b.value.type, value: b.value.value[i] }));
+  }
+  return JSON.stringify(a.value) === JSON.stringify(b.value);
 }
 
 /**
@@ -278,8 +312,8 @@ export async function executeBuild(o) {
           });
         }
         if (!o.force && !o.planOnly) {
-          // without a scan nothing protects chests/signs in the area: that needs an explicit opt-in
-          throw new BuildError(`Area too large to check for chests/signs (${volume} blocks > ${maxSnap}) — nothing was changed`, {
+          // without a scan nothing protects chests and other containers in the area: that needs an explicit opt-in
+          throw new BuildError(`Area too large to check for chests and other containers (${volume} blocks > ${maxSnap}) — nothing was changed`, {
             code: 'SCAN_TOO_LARGE', hint: 'Split the build into parts, or pass --force to build without the container check.',
           });
         }

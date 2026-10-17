@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Structure } from './core/structure.js';
 import { decodeSnapshot, captureRegion, listSnapshots } from './snapshot.js';
-import { executeBuild, blockMatches, BuildError, normalizeDimension, DIMENSIONS, DECAYS_UNDER_COVER } from './build.js';
+import { executeBuild, blockMatches, nbtSatisfied, BuildError, normalizeDimension, DIMENSIONS, DECAYS_UNDER_COVER } from './build.js';
 import { blockName, isAir } from './core/blockstate.js';
 import { withGamerules } from './gamerules.js';
 import { normalizeServerKey } from './connect.js';
@@ -67,7 +67,7 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
       if (before == null) return;
       const owned = ownedStates(x, y, z, after);
       // nothing this build placed here differs from the original: nothing to undo
-      if (owned.every((b) => blockMatches(b, before, { strict: true }))) return;
+      if (owned.every((b) => sameBlock(b, before))) return;
       if (current) {
         const now = current.get(x, y, z);
         if (now == null) {
@@ -75,8 +75,8 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
           unreadable++;
           return;
         }
-        if (blockMatches(before, now, { strict: true })) return; // already as it was
-        if (!owned.some((b) => blockMatches(b, now))) {
+        if (sameBlock(before, now)) return; // already as it was
+        if (!owned.some((b) => blockMatches(b, now) && nbtSatisfied(b, now))) {
           conflicts.push({ pos: [x, y, z], expected: after, found: now });
           return;
         }
@@ -147,6 +147,11 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
     build,
     ...(groundBuild ? { ground: { restored: ground.count, ok: groundBuild.ok } } : {}),
   };
+}
+
+/** Same block state and the same block data (sign text…) as far as both sides know it. */
+function sameBlock(a, b) {
+  return blockMatches(a, b, { strict: true }) && nbtSatisfied(a, b) && nbtSatisfied(b, a);
 }
 
 /** Water/lava (incl. bubble columns and waterlogged blocks): states that can run out when their container goes. */

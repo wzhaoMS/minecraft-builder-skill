@@ -51,7 +51,7 @@ RCON, the bot's connection and its operator status, and prints a fix for each pr
 * Undo needs the **bot** transport (RCON can't read blocks); RCON builds report
   `undo.available: false`. With RCON, `mcb undo --force` restores without checking for later edits.
 * Snapshots store block states only — entities, dropped items and container contents are not
-  saved. That's why builds refuse to overwrite chests, barrels, signs, lecterns, shulker boxes…
+  saved. That's why builds refuse to overwrite chests, barrels, lecterns, shulker boxes… (sign text, banner patterns and heads are saved, so signs can be built over and undone)
   (`CONTAINERS_AT_RISK`) unless you pass `--force` — including identical ones a `/fill` would
   rewrite, and with `--no-undo`.
 * Nothing is changed when the snapshot can't be taken completely (`SNAPSHOT_TOO_LARGE`,

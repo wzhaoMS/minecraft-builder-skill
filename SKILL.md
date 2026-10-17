@@ -68,7 +68,7 @@ file** (or in the current directory without one) — run `undo` with the same co
    Fix and repeat until it looks right. `node bin/mcb.js info x.json` shows size, bounds, block
    counts and a command estimate.
 4. **Plan, then build** — `node bin/mcb.js plan x.json --near <player>` is read-only: where it will
-   land, how many existing blocks it replaces (by type), whether it would destroy chests/signs.
+   land, how many existing blocks it replaces (by type), whether it would destroy chests or other containers.
    Then `node bin/mcb.js build x.json --near <player> --verify` (or `--at x,y,z --facing south`).
    `--near` puts it in front of the player, front facing them; `--side west --gap 40` puts it 40
    blocks to their west instead (still facing them). Add `--clear` to empty the area first (trees,
@@ -78,7 +78,8 @@ file** (or in the current directory without one) — run `undo` with the same co
 5. **Look at the real result** — `--verify` compares the world with your blueprint; to see what is
    actually there (water flow, terrain around it, things players added) capture it:
    `node bin/mcb.js snapshot --from <box min> --to <box max> -o live.json --render live.png`
-   (use the `box` from the build report, ±2 blocks) and look at `live.png`.
+   (use the `box` from the build report, ±2 blocks) and look at `live.png`. Snapshots copy block
+   states plus sign text, banner patterns and heads — never chest/container contents.
 6. **Report** to the user: where it is, its size, verify result, and the undo command. If they
    don't like it: `node bin/mcb.js undo <id>` with the id the build printed (plain `undo` takes
    the newest snapshot in this undo store, which may not be yours). Undo restores only what the
@@ -94,7 +95,7 @@ turned to dirt under your own blocks counts as correct), and a re-run that chang
 no new undo snapshot.
 
 Safety rails you can rely on (and should not bypass casually): nothing changes until the blueprint
-is valid and the undo snapshot is complete; builds refuse to overwrite chests, barrels, signs and
+is valid and the undo snapshot is complete; builds refuse to overwrite chests, barrels and
 other blocks whose contents undo can't restore (`CONTAINERS_AT_RISK` → move the build or `--force`);
 an interrupted build can simply be re-run.
 
@@ -236,7 +237,7 @@ Read [docs/building-guide.md](docs/building-guide.md) before designing anything 
 | `Unknown block "x"` | Fix the name — the error lists suggestions; `validate` checks the whole blueprint. Blocks renamed between versions are translated automatically. |
 | Build landed in the wrong place/orientation | `undo <id>`, then re-check `--at` (NW corner, feet-level Y) and `--facing`; preview the top view. |
 | Some blocks missing after build | Run with `--verify` (auto-repairs); check warnings about unsupported torches/floating sand. |
-| `CONTAINERS_AT_RISK` | The area holds chests/signs/etc. Move the build, empty them, or (only if the user agrees) `--force`. |
+| `CONTAINERS_AT_RISK` | The area holds chests, barrels or other containers. Move the build, empty them, or (only if the user agrees) `--force`. |
 | `SNAPSHOT_TOO_LARGE` / `SNAPSHOT_INCOMPLETE` | Split the build into parts, retry, or `--no-undo` (then there is no undo). |
 | `SERVER_MISMATCH` on undo | The snapshot is from another server address. Connect to that server; `--any-server` if it is the same world under another name. |
 | `nothing answering` in `doctor` | It prints the host:port it tried — pass `--host/--port` (or fix `mcb.config.json`) instead of creating a new server. |
