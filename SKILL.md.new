@@ -1,0 +1,163 @@
+---
+name: minecraft-builder
+description: Design, preview, build, verify and undo structures in Minecraft Java Edition — houses, castles, towers, skyscrapers, whole cities, trees, bridges, pixel art from images, block-letter text, and imported schematics — through the `mcb` CLI (mineflayer bot or RCON). Use whenever the user wants something built, generated, copied or placed in Minecraft, wants a local Paper build server set up, wants schematics (.schem/.nbt/.litematic) converted/imported/exported, or wants a datapack that builds a structure in a single-player world.
+---
+
+# Minecraft Builder (`mcb`)
+
+`mcb` turns a blueprint into blocks in a running Minecraft world — fast (greedy `/fill` merging),
+safely (undo snapshots, verified results, no chat spam) and repeatably (same input → same build).
+You design; `mcb` handles coordinates, block-state rotation, placement order, rate limits, chunk
+loading and server quirks.
+
+Run everything from the repo root: `node bin/mcb.js <command>` (or `npx mcb <command>` after
+`npm install`). Every command accepts `--json` for machine-readable output; errors always come
+with a `hint:` line telling you what to do.
+
+## 1. Get connected (once)
+
+```bash
+npm install                       # Node.js ≥ 22
+node bin/mcb.js doctor            # tells you exactly what is missing and how to fix it
+```
+
+Pick the situation that matches the user:
+
+| Situation | Do this |
+|---|---|
+| No server yet (most common) | `node bin/mcb.js server setup --accept-eula --op <TheirMinecraftName>` then `node bin/mcb.js server start`. Tell the user to join **Multiplayer → `localhost`** with Minecraft Java **1.21.11** (or the version printed). Only pass `--accept-eula` after telling the user they are agreeing to the [Minecraft EULA](https://aka.ms/MinecraftEULA). Add `--install-java` if `doctor` says Java 21 is missing. |
+| They already run a server | Need its host/port, and either RCON (`--rcon-password`, fastest) or an op'd bot account: in the server console `op BuilderBot` (offline-mode servers) — online-mode servers need `--auth microsoft` with a real account. Save settings in `mcb.config.json` (see below). |
+| Single-player world only, no server | `node bin/mcb.js export <blueprint> --datapack "<.minecraft>/saves/<World>/datapacks" --name <name>`, then in game `/reload` and `/function mcb:<name>` while standing where the build's north-west corner should go. |
+
+`server setup` writes `mcb.config.json` (host, port, RCON password, server dir) so later commands
+need no flags. You can also create it by hand:
+
+```json
+{ "host": "127.0.0.1", "port": 25565, "username": "BuilderBot", "transport": "auto",
+  "rconPort": 25575, "rconPassword": "…", "player": "Steve" }
+```
+
+`transport`: `bot` (default; can read blocks → verify/undo/snapshot, visible "BuilderBot" player),
+`rcon` (server console; fastest, no op needed, no verify), `auto` (bot, falls back to RCON).
+
+## 2. The build loop
+
+1. **Where?** `node bin/mcb.js where <player>` → position + facing. Or ask the user for coordinates
+   (F3 screen). If `"player"` is set in the config, `--near` defaults to them.
+2. **Design** — pick the cheapest approach that gets a good result:
+   * a generator: `node bin/mcb.js generators` (list), `node bin/mcb.js generators house` (params);
+   * a JSON blueprint with ASCII layers / fills (hand-designed builds);
+   * a JS module (procedural/math/composition) — see [docs/blueprint-format.md](docs/blueprint-format.md);
+   * an existing `.schem` / `.nbt` / `.litematic` file.
+3. **Check** — `node bin/mcb.js validate x.json` (block typos with suggestions, unsupported torches,
+   floating sand…) then `node bin/mcb.js preview x.json -o x.png` and **look at the PNG** (iso view
+   from the south-east, top view with north up, south (front) and east elevations). Fix and repeat
+   until it looks right. `node bin/mcb.js info x.json` shows size, block counts and command estimate.
+4. **Build** — `node bin/mcb.js build x.json --near <player> --verify`
+   (or `--at x,y,z --facing south`). Add `--clear` to empty the area first (trees, terrain),
+   `--ground grass_block` for a foundation layer, `--mode hand` to watch the bot place blocks one
+   by one, `--dry-run` to print the commands without building.
+5. **Report** to the user: where it is, its size, verify result. If they don't like it:
+   `node bin/mcb.js undo` restores the area exactly as it was.
+
+Build reports (`--json`) include `ok`, `box` (world bounds), `facing`, `plan.commands`,
+`errors[]` (with hints), `verify.{checked,mismatches,repaired,remaining}` and `undo.id`.
+Re-running a build is safe and cheap: blocks that are already correct are skipped.
+
+## 3. Coordinates and orientation — get these right
+
+* +X = east, +Z = south, +Y = up. Overworld height −64…319; default superflat ground surface is y = −61
+  (players stand at y = −60).
+* Blueprint `y = 0` is the first layer **above** the ground; negative y goes underground.
+* A blueprint's **front faces south (+Z)**: put doors, facades and text on the south side.
+  `--facing north|east|south|west` rotates the build (block states too). `--near <player>` places
+  it in front of them, front facing them.
+* ASCII layers are drawn like a map: first row = north, characters left→right = west→east,
+  first layer = bottom.
+* Stairs `facing=X` = you walk **up** toward X (the tall side is at X). On a gable roof whose ridge
+  runs east–west, the south slope uses `facing=north`, the north slope `facing=south`; eaves use
+  `half=top`.
+* Wall torches/ladders/wall signs `facing=X` point toward X and hang on the block on the opposite
+  side. Standing signs/banners `rotation`: 0 south, 4 west, 8 north, 12 east.
+* Text: use the `text` generator (`-p text=HELLO -p facing=south`) — it is readable from the side
+  you name, so you never hand-mirror letters.
+
+Handled automatically (don't work around them): door/tall-plant upper halves and bed heads are
+added; leaves are made persistent; torches, doors, plants, rails, carpets, signs are placed after
+the blocks they hang on, fluids last; `/fill` volume limits; chunk loading; rate limits; the
+1.21.11 gamerule renames; op command echo spam (`log_admin_commands` is muted during builds and
+restored).
+
+## 4. Blueprint quick reference
+
+JSON (all sections optional; order applied: generator → parts → fills → layers → blocks):
+
+```json
+{
+  "name": "shed",
+  "palette": { "P": "spruce_planks", "L": "spruce_log", "G": "glass_pane", "_": "air", ".": null,
+               "D": "spruce_door[facing=south]", "S": "spruce_slab",
+               "n": "spruce_stairs[facing=south]", "s": "spruce_stairs[facing=north]" },
+  "fills": [ { "from": [0, 0, 0], "to": [4, 0, 4], "block": "cobblestone" } ],
+  "layers": [
+    [".....", ".....", ".....", ".....", "....."],
+    ["LPPPL", "P___P", "P___P", "P___P", "LPDPL"],
+    ["LPGPL", "P___P", "G___G", "P___P", "LP.PL"],
+    ["nnnnn", "P___P", "P___P", "P___P", "sssss"],
+    [".....", "nnnnn", "P___P", "sssss", "....."],
+    [".....", ".....", "SSSSS", ".....", "....."]
+  ],
+  "parts": [ { "generator": "tree", "params": { "type": "birch" }, "at": [7, 0, 1] } ]
+}
+```
+(`D` is the door's lower half — `mcb` adds the upper half in the `.` above it; `n`/`s` are the
+north/south roof slopes, `S` the ridge.)
+
+JS module (loops, math, reuse): `export default { name, params: { h: { type: 'int', default: 10 } }, build(s, p, ctx) { s.fill(…); s.paste(ctx.gen('tree', { type: 'oak' }), 8, 0, 2); } }`.
+Structure methods: `set/get/fill(…, {mode: hollow|outline|walls|keep})/walls/floor/clear/line/sphere/cylinder/paste/replace/mapBlocks/transformed`. Helpers in `src/generators/helpers.js`: `materialFamily`, `door`, `bed`, `stairs`, `slab`, `gableRoof`, `hipRoof`, …
+Full spec: [docs/blueprint-format.md](docs/blueprint-format.md).
+
+## 5. Generators
+
+GENERATORS_TABLE
+
+`node bin/mcb.js generators <name>` lists every param with type, default and range. Use
+`-p key=value` (repeatable) or `--params '{"key":value}'`.
+
+## 6. Making it look good
+
+Read [docs/building-guide.md](docs/building-guide.md) before designing anything big. The short version:
+
+* **Depth beats flat**: inset windows one block, frame them (stairs/slabs/trapdoors), add
+  overhangs, pillars, buttresses; never leave a large flat single-material wall.
+* **2–4 material palette** with one accent: e.g. medieval = cobblestone base, oak/spruce logs as
+  frame, white/stripped planks infill, dark oak stairs roof; modern = white/light-gray concrete,
+  black/gray stained glass, smooth quartz trim.
+* **Real roofs**: stairs with 1-block eaves (`half=top` underneath), slabs on the ridge; steep
+  (1:1) for cottages, low for modern.
+* **Light it**: lanterns/torches every ~6 blocks so it's lit at night and mobs don't spawn.
+* **Proportion**: storeys are 4 blocks floor-to-floor; doors 1×2; windows 1–2 wide, 2 tall.
+* **Context**: path to the door, some trees, a fence or garden; vary heights in cities.
+
+## 7. Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `NOT_OP` / "Unknown or incomplete command" | Server console: `op BuilderBot` (or `node bin/mcb.js server op BuilderBot` with RCON). |
+| `ECONNREFUSED` / connect timeout | Server not running or wrong host/port → `node bin/mcb.js doctor`, `server start`. |
+| Kicked: whitelist / online-mode | `whitelist add BuilderBot`; online-mode servers need `--auth microsoft` or use RCON. |
+| "Unsupported server version" | mineflayer supports up to 26.1. Use `--transport rcon`, or a supported server version. |
+| `Unknown block "x"` | Fix the name — the error lists suggestions; `validate` checks the whole blueprint. |
+| Build landed in the wrong place/orientation | `undo`, then re-check `--at` (NW corner, feet-level Y) and `--facing`; preview the top view. |
+| Some blocks missing after build | Run with `--verify` (auto-repairs); check warnings about unsupported torches/floating sand. |
+| Huge build is slow | Prefer `transport: rcon`; `info` estimates time; split into parts; keep `--mode fill`. |
+
+More: [docs/troubleshooting.md](docs/troubleshooting.md).
+
+## 8. Etiquette with real worlds
+
+* Say where you are about to build and how big it is before building near a player; avoid
+  building on top of them (`--near` leaves a gap).
+* `--clear` deletes everything in the area (except below ground). Big clears and big builds are
+  undoable, but ask first in worlds you didn't create.
+* Keep the undo id from the report; `node bin/mcb.js undo --list` shows all snapshots.

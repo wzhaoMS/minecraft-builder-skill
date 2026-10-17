@@ -1,0 +1,639 @@
+/**
+ * mcb — Minecraft builder CLI for AI agents and humans.
+ * Every command supports --json (single JSON object on stdout; logs go to stderr).
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { parseArgs, parseCoords, parseParams } from './args.js';
+import { resolveConfig, writeConfigFile, stateDir, CONFIG_FILE } from '../config.js';
+import { loadBlueprint } from '../io/blueprint.js';
+import { lintStructure } from '../core/lint.js';
+import { planBuild } from '../compile/plan.js';
+import { executeBuild } from '../build.js';
+import { openTransport } from '../connect.js';
+import { listSnapshots, decodeSnapshot, captureRegion } from '../snapshot.js';
+import { DEFAULT_MC_VERSION } from '../core/blockinfo.js';
+
+const require = createRequire(import.meta.url);
+const PKG = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+
+const BOOLEANS = ['json', 'quiet', 'help', 'verify', 'strict', 'dryRun', 'force', 'acceptEula', 'fawe', 'installJava', 'list', 'noAir', 'all', 'yes', 'repair', 'undo', 'lan'];
+
+export const HELP = `mcb ${PKG.version} — build anything in Minecraft Java Edition (for AI agents and humans)
+
+USAGE  mcb <command> [args] [--flags]          (all commands accept --json)
+
+DESIGN
+  generators                         List built-in generators and their params
+  info <blueprint> [-p k=v]          Size, block counts, command plan, lint warnings
+  validate <blueprint>               Check block names/states against Minecraft (exit 1 on errors)
+  preview <blueprint> [-o out.png] [--view sheet|iso|iso-nw|top|south|north|east|west] [--size 1600]
+  export <blueprint> -o <file.schem|.nbt|.json|.mcfunction|.png>   |   --datapack <dir> [--name n] [--at x,y,z]
+  generate <generator> [-p k=v]... -o <file>           Run a generator and save the result
+
+BUILD (needs a running server)
+  build <blueprint> (--at x,y,z | --near <player>) [--facing north|east|south|west] [--rotate 90]
+        [--mirror x|z] [--anchor corner|center|origin] [--clear [margin]] [--ground <block>]
+        [--verify] [--strict] [--mode fill|layered|hand] [--bps 20] [--no-undo] [--dry-run] [-p k=v]
+  undo [id] [--list]                 Restore the world as it was before a build
+  watch <blueprint> (--at x,y,z | --near <player>)   Rebuild live whenever the file is saved (only changes are sent)
+  snapshot --from x,y,z --to x,y,z -o <file.json|.schem> [--render out.png]   Copy a region into a blueprint
+  where [player]                     Player position and facing (or list players)
+  cmd "<command>" ["<command>"...]   Run raw commands (no leading slash needed)
+
+SERVER
+  doctor                             Diagnose Node/Java/server/bot/op problems with fixes
+  mcp                                Run as an MCP server on stdio (tools: mc_preview, mc_build, mc_undo, …)
+  server setup [--dir ../mc-server] [--mc-version ${DEFAULT_MC_VERSION}] [--port 25565] --accept-eula
+               [--op <you>] [--fawe] [--install-java] [--world flat|normal] [--lan]
+  server start|stop|status|logs [--dir <server dir>]
+  server op <name>
+
+CONNECTION FLAGS (or mcb.config.json / MCB_* env vars)
+  --host 127.0.0.1 --port 25565 --username BuilderBot --auth offline|microsoft --version <auto>
+  --transport auto|bot|rcon --rcon-port 25575 --rcon-password <pw> --config <file>
+
+BLUEPRINTS  .json (palette + ASCII layers / fills / blocks / generator / parts), .js/.mjs modules,
+            .schem .schematic .nbt .litematic, or gen:<name>. Front faces SOUTH (+Z); --facing turns it.
+Docs: SKILL.md, docs/  •  https://github.com/wzhaoMS/minecraft-builder-skill`;
+
+class Output {
+  constructor(flags) {
+    this.json = !!flags.json;
+    this.quiet = !!flags.quiet;
+    this.tty = process.stderr.isTTY;
+    this._lastProgress = 0;
+  }
+  log(msg) { if (!this.quiet) process.stderr.write(`${msg}\n`); }
+  print(msg) { if (!this.json) process.stdout.write(`${msg}\n`); }
+  result(obj) { if (this.json) process.stdout.write(JSON.stringify(obj, null, 2) + '\n'); }
+  progress(p) {
+    if (this.quiet) return;
+    const now = Date.now();
+    const pct = p.total ? Math.floor((p.done / p.total) * 100) : 0;
+    const label = p.stage === 'build' && p.blocksTotal
+      ? `building ${pct}% (${p.blocksDone}/${p.blocksTotal} blocks${p.etaMs != null ? `, ~${Math.ceil(p.etaMs / 1000)}s left` : ''})`
+      : `${p.stage} ${pct}%`;
+    if (this.tty) {
+      process.stderr.write(`\r${label}`.padEnd(70));
+      if (p.done >= p.total) process.stderr.write('\n');
+    } else if (now - this._lastProgress > 5000 || p.done >= p.total) {
+      this._lastProgress = now;
+      process.stderr.write(`${label}\n`);
+    }
+  }
+}
+
+function fmtBox(b) {
+  return `${b.min.join(',')} → ${b.max.join(',')}`;
+}
+
+async function loadWithParams(src, flags) {
+  if (!src) throw Object.assign(new Error('Missing blueprint argument'), { hint: 'e.g. `mcb info examples/blueprints/cottage.json` or `mcb preview gen:house`', exitCode: 2 });
+  const params = parseParams(flags.param, flags.params);
+  return loadBlueprint(src, { params });
+}
+
+// ───────────────────────────── commands ─────────────────────────────
+
+async function cmdGenerators(flags, out) {
+  const { listGenerators } = await import('../generators/index.js');
+  const list = listGenerators().map((g) => ({
+    name: g.name,
+    description: g.description,
+    params: Object.fromEntries(Object.entries(g.params || {}).map(([k, s]) => [k, { type: s.type, default: s.default, ...(s.values ? { values: s.values } : {}), ...(s.min !== undefined ? { min: s.min } : {}), ...(s.max !== undefined ? { max: s.max } : {}), description: s.description }])),
+  }));
+  out.result({ ok: true, generators: list });
+  for (const g of list) {
+    if (flags._[1] && g.name !== flags._[1]) continue;
+    out.print(`${g.name.padEnd(12)} ${g.description}`);
+    if (flags._[1] || flags.all) {
+      for (const [k, s] of Object.entries(g.params)) {
+        const extra = s.values ? ` (${s.values.join('|')})` : s.min !== undefined || s.max !== undefined ? ` [${s.min ?? ''}..${s.max ?? ''}]` : '';
+        out.print(`    ${k.padEnd(16)} ${String(s.type).padEnd(7)} default=${JSON.stringify(s.default)}${extra}  ${s.description ?? ''}`);
+      }
+    }
+  }
+  if (!flags._[1] && !flags.all) out.print('\nShow params: mcb generators <name>   (or --all). Use: mcb preview gen:<name> -p key=value');
+  return 0;
+}
+
+async function cmdInfo(flags, out) {
+  const s = await loadWithParams(flags._[1], flags);
+  const lint = lintStructure(s, { version: flags.version || DEFAULT_MC_VERSION });
+  const b = s.bounds();
+  const plan = b ? planBuild(s, {}).stats : null;
+  const counts = s.blockCounts();
+  const res = {
+    ok: lint.ok, name: s.name, size: b?.size ?? [0, 0, 0], bounds: b ? { min: b.min, max: b.max } : null, blocks: s.count,
+    palette: Object.keys(counts).length, counts, plan,
+    estimatedSeconds: plan ? Math.max(1, Math.round(plan.commands / 150)) : 0,
+    lint: { errors: lint.errors, warnings: lint.warnings, fixes: lint.fixes },
+  };
+  out.result(res);
+  out.print(`${s.name}: ${res.size.join('×')} (W×H×D), ${s.count} blocks, ${res.palette} block types`);
+  if (b) out.print(`bounds ${fmtBox(b)}   plan: ${plan.commands} commands (${plan.fills} fill, ${plan.setblocks} setblock), ~${res.estimatedSeconds}s to build`);
+  const top = Object.entries(counts).slice(0, 12);
+  for (const [blk, n] of top) out.print(`  ${String(n).padStart(7)}  ${blk}`);
+  if (Object.keys(counts).length > top.length) out.print(`  … ${Object.keys(counts).length - top.length} more`);
+  printLint(lint, out);
+  return lint.ok ? 0 : 1;
+}
+
+function printLint(lint, out) {
+  for (const e of lint.errors) out.print(`✗ ${e.errors.join('; ')}  (${e.count}× e.g. at ${e.at.join(',')})`);
+  for (const w of lint.warnings) out.print(`⚠ ${w.message} (${w.count}× e.g. ${w.examples.map((p) => p.join(',')).join(' ')})`);
+  for (const f of lint.fixes) out.print(`✓ auto-fix: ${f.message} (${f.count}×)`);
+}
+
+async function cmdValidate(flags, out) {
+  const s = await loadWithParams(flags._[1], flags);
+  const lint = lintStructure(s, { version: flags.version || DEFAULT_MC_VERSION });
+  out.result({ ok: lint.ok, errors: lint.errors, warnings: lint.warnings, fixes: lint.fixes, blocks: s.count });
+  if (lint.ok && !lint.warnings.length) out.print(`✓ ${s.name}: ${s.count} blocks, all block states valid for Minecraft ${flags.version || DEFAULT_MC_VERSION}`);
+  else if (lint.ok) out.print(`✓ valid (${s.count} blocks) with warnings:`);
+  printLint(lint, out);
+  return lint.ok ? 0 : 1;
+}
+
+async function cmdPreview(flags, out) {
+  const s = await loadWithParams(flags._[1], flags);
+  lintStructure(s, { version: flags.version || DEFAULT_MC_VERSION });
+  const { renderPreview } = await import('../render/preview.js');
+  const view = flags.view ?? 'sheet';
+  const file = flags.out && flags.out !== true ? flags.out : `${(s.name || 'preview').replace(/[^\w.-]+/g, '_')}${view === 'sheet' ? '' : '-' + view}.png`;
+  const r = renderPreview(s, { view, maxSize: flags.size ? Number(flags.size) : undefined, title: s.name });
+  fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
+  fs.writeFileSync(file, r.png);
+  const b = s.bounds();
+  out.result({ ok: true, file: path.resolve(file), view, width: r.width, height: r.height, size: b?.size, blocks: s.count });
+  out.print(`wrote ${path.resolve(file)} (${r.width}×${r.height}, view=${view}) — ${b ? b.size.join('×') : 'empty'}, ${s.count} blocks`);
+  return 0;
+}
+
+async function cmdExport(flags, out) {
+  const s = await loadWithParams(flags._[1], flags);
+  lintStructure(s, { version: flags.version || DEFAULT_MC_VERSION });
+  if (flags.datapack) {
+    const { writeDatapack } = await import('../io/datapack.js');
+    const name = (flags.name ?? s.name ?? 'build').toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+    const at = flags.at ? parseCoords(flags.at) : undefined;
+    const r = await writeDatapack(s, { outDir: flags.datapack, name, mode: at ? 'absolute' : 'relative', at, strict: !!flags.strict });
+    out.result({ ok: true, ...r });
+    out.print(`wrote data pack → ${path.resolve(flags.datapack)}`);
+    if (r.instructions) out.print(r.instructions);
+    return 0;
+  }
+  const file = flags.out;
+  if (!file || file === true) throw Object.assign(new Error('export needs -o <file> or --datapack <dir>'), { exitCode: 2 });
+  const ext = path.extname(file).toLowerCase();
+  if (ext === '.png') return cmdPreview({ ...flags, out: file }, out);
+  if (ext === '.mcfunction') {
+    const { writeMcfunction } = await import('../io/datapack.js');
+    const at = flags.at ? parseCoords(flags.at) : undefined;
+    fs.writeFileSync(file, writeMcfunction(s, { mode: at ? 'absolute' : 'relative', at, strict: !!flags.strict }));
+  } else {
+    const { writeStructureFile } = await import('../io/formats/index.js');
+    await writeStructureFile(s, file, {});
+  }
+  out.result({ ok: true, file: path.resolve(file), blocks: s.count });
+  out.print(`wrote ${path.resolve(file)} (${s.count} blocks)`);
+  return 0;
+}
+
+async function cmdGenerate(flags, out) {
+  const name = flags._[1];
+  if (!name) throw Object.assign(new Error('Usage: mcb generate <generator> [-p k=v] -o <file>'), { exitCode: 2 });
+  const src = name.startsWith('gen:') ? name : `gen:${name}`;
+  if (!flags.out || flags.out === true) return cmdInfo({ ...flags, _: ['info', src] }, out);
+  return cmdExport({ ...flags, _: ['export', src] }, out);
+}
+
+function buildOptsFromFlags(flags, cfg) {
+  return {
+    at: undefined,
+    near: flags.near && flags.near !== true ? flags.near : undefined,
+    facing: flags.facing,
+    rotate: flags.rotate,
+    mirror: flags.mirror,
+    anchor: flags.anchor,
+    gap: flags.gap !== undefined ? Number(flags.gap) : undefined,
+    clear: flags.clear === undefined || flags.clear === false ? false : flags.clear === true ? true : Number(flags.clear),
+    ground: flags.ground && flags.ground !== true ? flags.ground : undefined,
+    verify: !!flags.verify,
+    repair: flags.repair !== false,
+    strict: !!flags.strict,
+    mode: flags.mode ?? 'fill',
+    bps: flags.bps !== undefined ? Number(flags.bps) : undefined,
+    undo: flags.undo !== false,
+    dryRun: !!flags.dryRun,
+    force: !!flags.force,
+    stateDir: stateDir(cfg),
+    quiet: flags.quietOps === false ? false : undefined,
+  };
+}
+
+async function cmdBuild(flags, out) {
+  const cfg = resolveConfig(flags);
+  const s = await loadWithParams(flags._[1], flags);
+  const o = buildOptsFromFlags(flags, cfg);
+  if (!flags.at && !o.near && cfg.player) o.near = cfg.player;
+  if (!flags.at && !o.near && !o.dryRun) {
+    throw Object.assign(new Error('Where should it go? Pass --at x,y,z or --near <player>'), {
+      hint: 'Find coordinates with `mcb where <player>` (F3 in game), or set "player" in mcb.config.json.', exitCode: 2,
+    });
+  }
+  const transport = await openTransport(cfg, { dryRun: o.dryRun, log: (m) => out.log(m) });
+  try {
+    if (flags.at) {
+      const needsBase = String(flags.at).includes('~');
+      const base = needsBase ? await poseBase(transport, o.near ?? cfg.player) : null;
+      o.at = parseCoords(flags.at, base, '--at');
+    } else if (o.dryRun && !o.near) {
+      o.at = [0, 0, 0];
+    }
+    out.log(`building "${s.name}" via ${transport.kind}${transport.version ? ` (server ${transport.version})` : ''}…`);
+    const report = await executeBuild({
+      structure: s, transport, ...o, version: cfg.version ?? transport.version,
+      log: (m) => out.log(m), onProgress: (p) => out.progress(p),
+    });
+    if (o.dryRun && !flags.json) {
+      for (const c of report.commands) out.print(c);
+      out.log(`dry run: ${report.plan.commands} commands for ${report.voxels} blocks`);
+      return 0;
+    }
+    if (o.dryRun) report.commands = report.commands.slice(0, flags.limit ? Number(flags.limit) : 2000);
+    out.result(report);
+    printReport(report, out);
+    return report.ok ? 0 : 3;
+  } finally {
+    await transport.close();
+  }
+}
+
+async function poseBase(transport, player) {
+  if (!player) throw Object.assign(new Error('Relative --at (~) needs --near <player> (or "player" in config)'), { exitCode: 2 });
+  const p = await transport.playerPose(player);
+  return [p.x, p.y, p.z];
+}
+
+function printReport(r, out) {
+  const secs = (r.durationMs / 1000).toFixed(1);
+  out.print(`${r.ok ? '✓' : '✗'} ${r.name}: ${r.voxels} blocks at ${r.box.slice(0, 3).join(',')} → ${r.box.slice(3).join(',')} (front faces ${r.facing})`);
+  out.print(`  ${r.commandsSent ?? r.plan.commands}/${r.plan.commands} commands sent (${r.skipped ? `${r.skipped} skipped as already built, ` : ''}${r.noops ?? 0} no-ops) in ${secs}s${r.blocksPerSecond ? `, ${r.blocksPerSecond} blocks/s` : ''}`);
+  if (r.hand) out.print(`  hand mode: ${r.hand.placedByHand} placed by hand, ${r.hand.setblock} via /setblock, ${r.hand.corrected} state fixes`);
+  for (const f of r.lint?.fixes ?? []) out.print(`  ✓ auto-fix: ${f.message} (${f.count}×)`);
+  for (const w of r.lint?.warnings ?? []) out.print(`  ⚠ ${w.message} (${w.count}×)`);
+  for (const w of r.warnings ?? []) out.print(`  ⚠ ${w}`);
+  for (const e of r.errors ?? []) out.print(`  ✗ ${e.count}× ${e.message}${e.hint ? ` — ${e.hint}` : ''}${e.examples?.length ? `\n      e.g. /${e.examples[0]}` : ''}`);
+  if (r.verify) {
+    const v = r.verify;
+    out.print(`  verify: ${v.checked} checked, ${v.mismatches} mismatched, ${v.repaired} repaired, ${v.remaining} remaining`);
+    for (const m of v.examples ?? []) out.print(`    at ${m.pos.join(',')}: expected ${m.expected}, found ${m.actual}`);
+  }
+  if (r.undo) out.print(`  undo: mcb undo ${r.undo.id}`);
+}
+
+async function cmdWatch(flags, out) {
+  const cfg = resolveConfig(flags);
+  const file = flags._[1];
+  if (!file || !fs.existsSync(file)) throw Object.assign(new Error('Usage: mcb watch <blueprint file> (--at x,y,z | --near <player>) [build flags]'), { exitCode: 2 });
+  const o = buildOptsFromFlags(flags, cfg);
+  if (!flags.at && !o.near && cfg.player) o.near = cfg.player;
+  if (!flags.at && !o.near) throw Object.assign(new Error('Where should it go? Pass --at x,y,z or --near <player>'), { exitCode: 2 });
+  if (o.mode === 'hand') o.mode = 'fill';
+  const transport = await openTransport(cfg, { log: (m) => out.log(m) });
+  const { Structure } = await import('../core/structure.js');
+  if (flags.at) o.at = parseCoords(flags.at, String(flags.at).includes('~') ? await poseBase(transport, o.near ?? cfg.player) : null, '--at');
+  let prev = null;
+  let baseline = new Structure();
+  let busy = false, again = false, n = 0;
+  const rebuild = async () => {
+    if (busy) { again = true; return; }
+    busy = true;
+    try {
+      do {
+        again = false;
+        n++;
+        try {
+          const s = await loadWithParams(file, flags);
+          const opts = prev
+            ? { ...o, at: prev.origin, anchor: 'origin', facing: prev.facing, near: undefined, rotate: undefined, clear: false }
+            : o;
+          const report = await executeBuild({
+            structure: s, transport, ...opts, previousWorld: prev?.world, baseline: prev?.cleared ? null : baseline, saveUndo: !prev,
+            version: cfg.version ?? transport.version, log: (m) => out.log(m), onProgress: (p) => out.progress(p),
+          });
+          if (report.snapshot) report.snapshot.forEach((x, y, z, b) => { if (!baseline.has(x, y, z)) baseline.set(x, y, z, b); });
+          prev = { world: report.world, origin: report.origin, facing: report.facing, cleared: prev?.cleared || !!o.clear };
+          out.print(`[${new Date().toLocaleTimeString()}] #${n} ${report.ok ? '✓' : '✗'} ${report.voxels} blocks, ${report.commandsSent} commands${report.skipped ? ` (${report.skipped} unchanged)` : ''}${report.restored ? `, ${report.restored} removed` : ''}${report.errorCount ? `, ${report.errorCount} errors` : ''}`);
+          for (const e of report.errors ?? []) out.print(`  ✗ ${e.count}× ${e.message}`);
+          if (n === 1 && report.undo) out.print(`undo everything later with: mcb undo ${report.undo.id}`);
+        } catch (e) {
+          out.print(`✗ ${e.message}${e.hint ? `\n  hint: ${e.hint}` : ''}`);
+        }
+      } while (again);
+    } finally {
+      busy = false;
+    }
+  };
+  await rebuild();
+  out.print(`watching ${path.resolve(file)} — save it to rebuild (Ctrl+C to stop)`);
+  let timer = null;
+  const watcher = fs.watch(path.resolve(file), () => {
+    clearTimeout(timer);
+    timer = setTimeout(rebuild, 300);
+  });
+  await new Promise((resolve) => {
+    process.once('SIGINT', resolve);
+    process.once('SIGTERM', resolve);
+  });
+  watcher.close();
+  await transport.close();
+  return 0;
+}
+
+async function cmdUndo(flags, out) {
+  const cfg = resolveConfig(flags);
+  const dir = stateDir(cfg);
+  const snaps = listSnapshots(dir);
+  if (flags.list) {
+    const list = snaps.map((s) => ({ id: s.id, file: s.file, time: new Date(s.mtime).toISOString() }));
+    out.result({ ok: true, snapshots: list });
+    if (!list.length) out.print('no undo snapshots');
+    for (const s of list) out.print(`${s.id}   ${s.time}`);
+    return 0;
+  }
+  const want = flags._[1];
+  const snap = want ? snaps.find((s) => s.id === want || s.id.startsWith(want)) : snaps[0];
+  if (!snap) throw Object.assign(new Error(want ? `No snapshot "${want}"` : 'Nothing to undo'), { hint: 'List snapshots with `mcb undo --list`.' });
+  const data = decodeSnapshot(fs.readFileSync(snap.file));
+  const transport = await openTransport(cfg, { log: (m) => out.log(m) });
+  try {
+    out.log(`restoring ${data.structure.count} blocks from ${snap.id}…`);
+    const report = await executeBuild({
+      structure: data.structure, transport, at: [0, 0, 0], anchor: 'origin', strict: true, undo: false, noSkip: false,
+      log: (m) => out.log(m), onProgress: (p) => out.progress(p), fixMultiblocks: false, force: true,
+    });
+    const applied = path.join(path.dirname(snap.file), 'applied');
+    fs.mkdirSync(applied, { recursive: true });
+    fs.renameSync(snap.file, path.join(applied, path.basename(snap.file)));
+    out.result({ ok: report.ok, id: snap.id, report });
+    out.print(`${report.ok ? '✓' : '✗'} undo ${snap.id}: restored ${data.structure.count} blocks in ${(report.durationMs / 1000).toFixed(1)}s`);
+    return report.ok ? 0 : 3;
+  } finally {
+    await transport.close();
+  }
+}
+
+async function cmdSnapshot(flags, out) {
+  const cfg = resolveConfig(flags);
+  if (!flags.from || !flags.to) throw Object.assign(new Error('snapshot needs --from x,y,z --to x,y,z'), { exitCode: 2 });
+  const a = parseCoords(flags.from, null, '--from'), b = parseCoords(flags.to, null, '--to');
+  const box = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2]), Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])];
+  const transport = await openTransport(cfg, { prefer: 'bot', log: (m) => out.log(m) });
+  try {
+    const { withGamerules } = await import('../gamerules.js');
+    const cap = await withGamerules(transport, { logAdminCommands: false }, () =>
+      captureRegion(transport, box, { onProgress: (d, n) => out.progress({ stage: 'snapshot', done: d, total: n }) }));
+    let s = cap.structure;
+    if (flags.noAir || flags.air === false) s.replace('air', null);
+    s = s.translated(-box[0], -box[1], -box[2]);
+    s.name = flags.name ?? path.basename(String(flags.out ?? 'snapshot'), path.extname(String(flags.out ?? '')));
+    const file = flags.out && flags.out !== true ? flags.out : `${s.name}.json`;
+    const { writeStructureFile } = await import('../io/formats/index.js');
+    await writeStructureFile(s, file, {});
+    let render = null;
+    if (flags.render) {
+      const { renderPreview } = await import('../render/preview.js');
+      const r = renderPreview(s, { view: 'sheet', title: s.name });
+      fs.writeFileSync(flags.render, r.png);
+      render = path.resolve(flags.render);
+    }
+    out.result({ ok: true, file: path.resolve(file), blocks: s.count, size: s.bounds()?.size, unknown: cap.unknown, render });
+    out.print(`wrote ${path.resolve(file)} (${s.count} blocks${cap.unknown ? `, ${cap.unknown} unreadable` : ''})${render ? ` + ${render}` : ''}`);
+    return 0;
+  } finally {
+    await transport.close();
+  }
+}
+
+async function cmdWhere(flags, out) {
+  const cfg = resolveConfig(flags);
+  const transport = await openTransport(cfg, { log: (m) => out.log(m) });
+  try {
+    const name = flags._[1] ?? cfg.player;
+    if (!name) {
+      const r = await transport.query('list');
+      out.result({ ok: true, players: r.text });
+      out.print(r.text || '(no response)');
+      return 0;
+    }
+    const p = await transport.playerPose(name);
+    const { yawToDir } = await import('../placement.js');
+    const facing = yawToDir(p.yaw);
+    const block = [Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)];
+    out.result({ ok: true, player: name, pos: [p.x, p.y, p.z], block, yaw: p.yaw, pitch: p.pitch, facing });
+    out.print(`${name} at ${block.join(',')} (exact ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}), facing ${facing} (yaw ${p.yaw.toFixed(0)})`);
+    out.print(`build in front of them:  mcb build <blueprint> --near ${name}`);
+    return 0;
+  } finally {
+    await transport.close();
+  }
+}
+
+async function cmdCmd(flags, out) {
+  const cfg = resolveConfig(flags);
+  const cmds = flags._.slice(1);
+  if (!cmds.length) throw Object.assign(new Error('Usage: mcb cmd "time set noon" ["weather clear" …]'), { exitCode: 2 });
+  const transport = await openTransport(cfg, { log: (m) => out.log(m) });
+  const results = [];
+  try {
+    for (const c of cmds) {
+      const r = await transport.query(c.replace(/^\//, ''));
+      results.push({ command: c, output: r.text, ok: !r.errors.length });
+      out.print(`/${c.replace(/^\//, '')} → ${r.text || '(no output)'}`);
+    }
+  } finally {
+    await transport.close();
+  }
+  out.result({ ok: results.every((r) => r.ok), results });
+  return results.every((r) => r.ok) ? 0 : 1;
+}
+
+async function cmdDoctor(flags, out) {
+  const cfg = resolveConfig(flags);
+  const checks = [];
+  const add = (name, status, detail, fix) => {
+    checks.push({ name, status, detail, ...(fix ? { fix } : {}) });
+    out.print(`${status === 'ok' ? '✓' : status === 'warn' ? '⚠' : '✗'} ${name}: ${detail}${fix ? `\n    fix: ${fix}` : ''}`);
+  };
+  const major = Number(process.versions.node.split('.')[0]);
+  add('node', major >= 22 ? 'ok' : 'fail', `v${process.versions.node}`, major >= 22 ? null : 'Install Node.js 22 or newer (https://nodejs.org)');
+  try {
+    require.resolve('mineflayer');
+    add('dependencies', 'ok', 'npm packages installed');
+  } catch {
+    add('dependencies', 'fail', 'mineflayer not installed', 'Run `npm install` in the repo');
+  }
+  add('config', cfg._file ? 'ok' : 'warn', cfg._file ? cfg._file : `no ${CONFIG_FILE} (using defaults/env/flags)`, cfg._file ? null : 'Run `mcb server setup --accept-eula` (writes one), or pass --host/--port');
+  add('target', 'ok', `${cfg.host}:${cfg.port} as ${cfg.username} (${cfg.auth}), transport=${cfg.transport}`);
+  const { findJava, javaInstallHint } = await import('../server/java.js');
+  if (cfg.serverDir || flags.dir) {
+    const java = findJava(21, cfg.serverDir ?? flags.dir);
+    add('java', java ? 'ok' : 'warn', java ? `Java ${java.version} (${java.path})` : 'Java 21+ not found (only needed to run a local server)', java ? null : javaInstallHint(21));
+  }
+  const { pingServer } = await import('../server/manage.js');
+  const ping = await pingServer(cfg.host, cfg.port);
+  if (!ping) {
+    add('server', 'fail', `nothing answering at ${cfg.host}:${cfg.port}`, cfg.serverDir ? '`mcb server start`' : 'Start your server, or create one: `mcb server setup --accept-eula && mcb server start`');
+  } else {
+    const supported = (() => {
+      try { return require('minecraft-protocol/src/version.js').supportedVersions; } catch { return []; }
+    })();
+    const v = String(ping.version ?? '').replace(/^(Paper|Spigot|Purpur|Folia)\s+/i, '');
+    const ok = !supported.length || supported.some((s) => v.includes(s));
+    add('server', ok ? 'ok' : 'warn', `${ping.version} (protocol ${ping.protocol}), ${ping.players}/${ping.max} players`, ok ? null : `mineflayer supports: ${supported.slice(-6).join(', ')}. Use RCON transport for other versions.`);
+  }
+  if (cfg.rconPassword) {
+    try {
+      const { connectRcon } = await import('../transport/rcon.js');
+      const t = await connectRcon({ host: cfg.host, rconPort: cfg.rconPort, rconPassword: cfg.rconPassword });
+      const r = await t.query('list');
+      add('rcon', 'ok', `connected (${r.text.trim().slice(0, 60)})`);
+      await t.close();
+    } catch (e) {
+      add('rcon', 'fail', e.message, e.hint);
+    }
+  } else {
+    add('rcon', 'warn', 'not configured (optional, fastest transport)', 'enable-rcon=true + rcon.password in server.properties, then --rcon-password');
+  }
+  if (ping && flags.bot !== false) {
+    try {
+      const { connectBot } = await import('../transport/bot.js');
+      const t = await connectBot({ host: cfg.host, port: cfg.port, username: cfg.username, auth: cfg.auth, version: cfg.version || undefined, connectTimeoutMs: 20000 });
+      add('bot', 'ok', `${t.username} joined (server ${t.version})`);
+      add('op', t.isOp ? 'ok' : 'fail', t.isOp ? 'bot is an operator' : 'bot is NOT an operator', t.isOp ? null : `In the server console: op ${t.username}   (or: mcb server op ${t.username})`);
+      await t.close();
+    } catch (e) {
+      add('bot', 'fail', e.message, e.hint);
+    }
+  }
+  const failed = checks.filter((c) => c.status === 'fail');
+  out.result({ ok: failed.length === 0, checks });
+  out.print(failed.length ? `\n${failed.length} problem(s) found.` : '\nAll good — try: mcb build gen:house --near <you> --verify');
+  return failed.length ? 1 : 0;
+}
+
+async function cmdServer(flags, out) {
+  const sub = flags._[1];
+  const cfg = resolveConfig(flags);
+  const dir = path.resolve(flags.dir ?? cfg.serverDir ?? path.join(process.cwd(), '..', 'mc-server'));
+  const m = await import('../server/manage.js');
+  const log = (msg) => out.log(msg);
+  switch (sub) {
+    case 'setup': {
+      const ops = flags.op && flags.op !== true ? String(flags.op).split(',') : [];
+      const summary = await m.setupServer({
+        dir, mcVersion: flags.mcVersion, port: flags.port ? Number(flags.port) : undefined, rconPort: flags.rconPort ? Number(flags.rconPort) : undefined,
+        rconPassword: flags.rconPassword, acceptEula: !!flags.acceptEula, fawe: !!flags.fawe, installJava: !!flags.installJava,
+        world: flags.world, botName: cfg.username, ops, lan: flags.lan === undefined ? undefined : flags.lan !== false && flags.lan !== 'false',
+        onlineMode: flags.onlineMode === undefined ? undefined : flags.onlineMode === true || flags.onlineMode === 'true', log,
+      });
+      const cfgFile = path.resolve(flags.configOut ?? cfg._file ?? CONFIG_FILE);
+      writeConfigFile(cfgFile, {
+        host: '127.0.0.1', port: summary.port, username: cfg.username, auth: 'offline', transport: 'auto',
+        rconPort: summary.rconPort, rconPassword: summary.rconPassword,
+        serverDir: path.relative(path.dirname(cfgFile), dir) || '.', ...(ops[0] ? { player: ops[0] } : {}),
+      });
+      out.result({ ok: summary.eula === 'accepted' && !summary.java?.missing, ...summary, config: cfgFile });
+      out.print(`server ready in ${dir}: Paper ${summary.paper.version} build ${summary.paper.build}, port ${summary.port}, RCON ${summary.rconPort}`);
+      out.print(`config written: ${cfgFile}`);
+      if (summary.eula !== 'accepted') out.print('✗ EULA not accepted — read https://aka.ms/MinecraftEULA and re-run with --accept-eula');
+      if (summary.java?.missing) out.print(`✗ Java ${summary.java.needed}+ missing — ${summary.java.hint}`);
+      if (summary.eula === 'accepted' && !summary.java?.missing) out.print('next: mcb server start   then join Multiplayer → localhost' + (summary.port !== 25565 ? `:${summary.port}` : ''));
+      return summary.eula === 'accepted' && !summary.java?.missing ? 0 : 1;
+    }
+    case 'start': {
+      const r = await m.startServer({ dir, memory: flags.memory, log, wait: flags.wait !== false });
+      out.result({ ok: true, ...r });
+      out.print(r.already ? `already running (pid ${r.pid})` : `running: pid ${r.pid}, port ${r.port}${r.version ? `, ${r.version}` : ''}`);
+      return 0;
+    }
+    case 'stop': {
+      const r = await m.stopServer({ dir, log });
+      out.result({ ok: true, ...r });
+      out.print('server stopped');
+      return 0;
+    }
+    case 'status': {
+      const r = await m.serverStatus({ dir, host: cfg.host, port: cfg.port });
+      out.result({ ok: r.running, ...r });
+      out.print(r.running ? `running at ${cfg.host}:${cfg.port}: ${r.ping.version}, ${r.ping.players}/${r.ping.max} players${r.pid ? ` (pid ${r.pid})` : ''}` : `not running at ${cfg.host}:${cfg.port}`);
+      return r.running ? 0 : 1;
+    }
+    case 'logs': {
+      const r = m.tailLog(dir, Number(flags.lines ?? 40));
+      out.result({ ok: !!r.file, ...r });
+      out.print(r.file ? r.lines.join('\n') : `no logs in ${dir}`);
+      return r.file ? 0 : 1;
+    }
+    case 'op': {
+      const name = flags._[2];
+      if (!name) throw Object.assign(new Error('Usage: mcb server op <name>'), { exitCode: 2 });
+      const t = await openTransport(cfg, { prefer: 'rcon', log });
+      try {
+        const r = await t.query(`op ${name}`);
+        out.result({ ok: true, output: r.text });
+        out.print(r.text);
+      } finally {
+        await t.close();
+      }
+      return 0;
+    }
+    default:
+      throw Object.assign(new Error(`Unknown server subcommand "${sub ?? ''}" (setup|start|stop|status|logs|op)`), { exitCode: 2 });
+  }
+}
+
+async function cmdMcp(flags) {
+  const { runStdio } = await import('../mcp/server.js');
+  await runStdio(flags);
+  return 0;
+}
+
+const COMMANDS = {
+  generators: cmdGenerators, gens: cmdGenerators, info: cmdInfo, validate: cmdValidate, preview: cmdPreview,
+  export: cmdExport, generate: cmdGenerate, build: cmdBuild, watch: cmdWatch, undo: cmdUndo, snapshot: cmdSnapshot, where: cmdWhere,
+  cmd: cmdCmd, doctor: cmdDoctor, server: cmdServer, mcp: cmdMcp,
+};
+
+export async function main(argv) {
+  const flags = parseArgs(argv, { booleans: BOOLEANS });
+  const out = new Output(flags);
+  const cmd = flags._[0];
+  if (!cmd || flags.help || cmd === 'help') {
+    process.stdout.write(HELP + '\n');
+    return cmd || flags.help ? 0 : 2;
+  }
+  if (cmd === 'version' || cmd === '--version') {
+    process.stdout.write(`${PKG.version}\n`);
+    return 0;
+  }
+  const fn = COMMANDS[cmd];
+  if (!fn) {
+    process.stderr.write(`Unknown command "${cmd}". Run \`mcb --help\`.\n`);
+    return 2;
+  }
+  try {
+    return await fn(flags, out);
+  } catch (e) {
+    const code = e.exitCode ?? 1;
+    if (flags.json) process.stdout.write(JSON.stringify({ ok: false, error: e.message, hint: e.hint, code: e.code, details: e.details }, null, 2) + '\n');
+    process.stderr.write(`error: ${e.message}\n`);
+    if (e.hint) process.stderr.write(`hint: ${e.hint}\n`);
+    if (process.env.MCB_DEBUG) process.stderr.write(`${e.stack}\n`);
+    return code;
+  }
+}

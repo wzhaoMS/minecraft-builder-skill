@@ -1,0 +1,25 @@
+{
+  "name": "shed",
+  "description": "Tiny spruce shed — the SKILL.md example. 5x5 footprint, door on the south side, gable roof, birch tree beside it.",
+  "palette": {
+    "P": "spruce_planks",
+    "L": "spruce_log",
+    "G": "glass_pane",
+    "_": "air",
+    ".": null,
+    "D": "spruce_door[facing=south]",
+    "S": "spruce_slab",
+    "n": "spruce_stairs[facing=south]",
+    "s": "spruce_stairs[facing=north]"
+  },
+  "fills": [{ "from": [0, 0, 0], "to": [4, 0, 4], "block": "cobblestone" }],
+  "layers": [
+    [".....", ".....", ".....", ".....", "....."],
+    ["LPPPL", "P___P", "P___P", "P___P", "LPDPL"],
+    ["LPGPL", "P___P", "G___G", "P___P", "LP.PL"],
+    ["nnnnn", "P___P", "P___P", "P___P", "sssss"],
+    [".....", "nnnnn", "P___P", "sssss", "....."],
+    [".....", ".....", "SSSSS", ".....", "....."]
+  ],
+  "parts": [{ "generator": "tree", "params": { "type": "birch" }, "at": [7, 0, 1] }]
+}
