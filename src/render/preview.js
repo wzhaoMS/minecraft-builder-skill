@@ -2,16 +2,21 @@
  * Preview renderer: Structure → PNG an AI agent (or human) can look at before building.
  *
  *   renderPreview(structure, { view: 'sheet' | 'iso' | 'iso-ne' | 'iso-nw' | 'iso-sw' | 'top' |
- *                              'south' | 'north' | 'east' | 'west', maxSize, title, scale })
+ *                              'south' | 'north' | 'east' | 'west', maxSize, title, scale,
+ *                              background, showGrid, cutaway: { y } })
  *     → { png: Buffer, width, height, view }
  *
- * iso      isometric from the SOUTH-EAST (you see the top, the south "front" face and the east face)
+ * iso      isometric from the SOUTH-EAST (you see the top, the south "front" face and the east face);
+ *          iso-ne / iso-nw / iso-sw look from the other corners
  * top      plan view, north up, east right, lighter = higher
  * south    elevation seen from the south (front): east is to the RIGHT
  * north    elevation seen from the north: east is to the LEFT
  * east     elevation seen from the east: north is to the RIGHT
  * west     elevation seen from the west: south is to the RIGHT
  * sheet    iso + top + south + east on one image with captions, compass and size
+ *
+ * maxSize bounds the longest side (default 1600) unless an explicit `scale` (pixels per block) is
+ * given. Axis labels are real structure coordinates. cutaway.y hides everything above that y.
  */
 import { encodePng } from './png.js';
 import { textBitmap } from './font.js';
@@ -85,11 +90,12 @@ const shade = (c, f) => [c[0] * f, c[1] * f, c[2] * f];
 
 // ───────────────────────────── voxel collection ─────────────────────────────
 
-function collect(structure) {
+/** Non-air voxels (optionally only those at or below `cutY`) with their bounds, or null when none. */
+function collect(structure, cutY = Infinity) {
   const b = structure.bounds();
   if (!b) return null;
   const vox = [];
-  structure.forEach((x, y, z, block) => { if (!isAir(block)) vox.push([x, y, z, block]); });
+  structure.forEach((x, y, z, block) => { if (y <= cutY && !isAir(block)) vox.push([x, y, z, block]); });
   if (!vox.length) return null;
   let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
   for (const [x, y, z] of vox) {
@@ -213,8 +219,8 @@ function makeSprites(s) {
 }
 
 /** Render the isometric view into a new canvas. `turns` = clockwise quarter turns already applied to the structure (for compass labels). */
-function renderIso(structure, { maxW, maxH, bg, scale, turns = 0 }) {
-  const c = collect(structure);
+function renderIso(structure, { maxW, maxH, bg, scale, turns = 0, cutY = Infinity, grid = true }) {
+  const c = collect(structure, cutY);
   if (!c) return null;
   const [sx, sy, sz] = c.size;
   const margin = 18, top = 60; // extra headroom so the compass rose never covers the build
@@ -231,7 +237,7 @@ function renderIso(structure, { maxW, maxH, bg, scale, turns = 0 }) {
   const g0 = proj(0, 0, 0), g1 = proj(sx, 0, 0), g2 = proj(sx, 0, sz), g3 = proj(0, 0, sz);
   const ground = rasterizeQuad([g0, g1, g2, g3]);
   for (let i = 0; i < ground.px.length; i += 2) cv.blend(ground.px[i], ground.px[i + 1], 0, 0, 0, 0.08);
-  if (s >= 4) {
+  if (grid && s >= 4) {
     for (let i = 0; i <= sx; i++) { const a = proj(i, 0, 0), b = proj(i, 0, sz); cv.line(a[0], a[1], b[0], b[1], [0, 0, 0], i % 10 === 0 ? 0.18 : 0.07); }
     for (let k = 0; k <= sz; k++) { const a = proj(0, 0, k), b = proj(sx, 0, k); cv.line(a[0], a[1], b[0], b[1], [0, 0, 0], k % 10 === 0 ? 0.18 : 0.07); }
   }
@@ -310,19 +316,20 @@ const VIEWS = {
 };
 
 const mod = (a, n) => ((a % n) + n) % n;
+const ORTHO_MARGINS = { ml: 26, mt: 12, mr: 12, mb: 18 };
 
-function renderOrtho(structure, view, { maxW, maxH, bg, scale }) {
-  const c = collect(structure);
+function renderOrtho(structure, view, { maxW, maxH, bg, scale, cutY = Infinity, grid = true, plotTint = true }) {
+  const c = collect(structure, cutY);
   if (!c) return null;
   const V = VIEWS[view];
   const gw = V.W(c), gh = V.H(c);
-  const ml = 26, mt = 12, mr = 12, mb = 18;
+  const { ml, mt, mr, mb } = ORTHO_MARGINS;
   let cell = scale ?? Math.floor(Math.min((maxW - ml - mr) / gw, (maxH - mt - mb) / gh));
   cell = Math.max(1, Math.min(24, cell));
   const sub = cell >= 8 ? 4 : 1;
   const W = gw * cell + ml + mr, H = gh * cell + mt + mb;
   const cv = new Canvas(W, H, bg);
-  cv.rect(ml, mt, gw * cell, gh * cell, [255, 255, 255], 0.55);
+  if (plotTint) cv.rect(ml, mt, gw * cell, gh * cell, [255, 255, 255], 0.55);
   const depths = c.vox.map((v) => V.depth(v[0], v[1], v[2]));
   let dmin = Infinity, dmax = -Infinity;
   for (const d of depths) { if (d < dmin) dmin = d; if (d > dmax) dmax = d; }
@@ -348,15 +355,15 @@ function renderOrtho(structure, view, { maxW, maxH, bg, scale }) {
   const [u0, du] = V.uc(c), [v0, dv] = V.vc(c);
   // grid line k sits on the world plane between cells k-1 and k
   const plane = (start, dir, k) => (dir > 0 ? start + k : start + 1 - k);
-  const gridA = cell >= 6 ? 0.1 : 0;
+  const gridA = grid && cell >= 6 ? 0.1 : 0;
   for (let i = 0; i <= gw; i++) {
     const X = ml + i * cell;
-    const strong = mod(plane(u0, du, i), 10) === 0;
+    const strong = grid && mod(plane(u0, du, i), 10) === 0;
     if (gridA || strong) cv.line(X, mt, X, mt + gh * cell, [0, 0, 0], strong ? 0.25 : gridA);
   }
   for (let j = 0; j <= gh; j++) {
     const Y = mt + j * cell;
-    const strong = mod(plane(v0, dv, j), 10) === 0;
+    const strong = grid && mod(plane(v0, dv, j), 10) === 0;
     if (gridA || strong) cv.line(ml, Y, ml + gw * cell, Y, [0, 0, 0], strong ? 0.25 : gridA);
   }
   // label cells whose real coordinate is a multiple of `tick` (plus the first cell if no label is near it)
@@ -422,25 +429,45 @@ function fitCanvas(cv, maxSize) {
   return out;
 }
 
+/** `background` option → [r,g,b] (accepts [r,g,b] or "#rrggbb"). */
+function parseColor(c) {
+  if (Array.isArray(c) && c.length >= 3 && c.slice(0, 3).every((v) => Number.isFinite(Number(v)))) {
+    return c.slice(0, 3).map((v) => Math.max(0, Math.min(255, Math.round(Number(v)))));
+  }
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(c).trim());
+  if (m) {
+    const n = parseInt(m[1], 16);
+    return [n >> 16, (n >> 8) & 255, n & 255];
+  }
+  throw new TypeError(`background must be [r,g,b] or "#rrggbb", got ${JSON.stringify(c)}`);
+}
+
 /**
  * @param {import('../core/structure.js').Structure} structure
- * @param {{ view?: string, maxSize?: number, title?: string, scale?: number }} [opts]
+ * @param {{ view?: string, maxSize?: number, title?: string, scale?: number, background?: number[]|string,
+ *           showGrid?: boolean, cutaway?: { y?: number } }} [opts]
+ *   background  colour behind the structure (every panel and the sheet page)
+ *   showGrid    false hides the block grid / 10-block lines (default true)
+ *   cutaway.y   drop everything above this structure y (floor plans, interiors)
  */
 export function renderPreview(structure, opts = {}) {
   const view = (opts.view ?? 'sheet').toLowerCase();
   const maxSize = Math.max(16, Math.floor(opts.maxSize ?? 1600));
+  const custom = opts.background != null ? parseColor(opts.background) : null;
+  const grid = opts.showGrid !== false;
+  const cutY = Number.isFinite(opts.cutaway?.y) ? Math.floor(opts.cutaway.y) : Infinity;
   let cv;
   if (view in ISO_ROT) {
     const turns = ISO_ROT[view];
     const s = turns ? structure.transformed({ rotate: turns * 90 }) : structure;
-    const r = renderIso(s, { maxW: maxSize, maxH: maxSize, bg: BG_ISO, scale: opts.scale, turns });
+    const r = renderIso(s, { maxW: maxSize, maxH: maxSize, bg: custom ?? BG_ISO, scale: opts.scale, turns, cutY, grid });
     cv = r ? r.canvas : emptyImage();
   } else if (view in VIEWS) {
-    const r = renderOrtho(structure, view, { maxW: maxSize, maxH: maxSize, bg: BG_PANEL, scale: opts.scale });
+    const r = renderOrtho(structure, view, { maxW: maxSize, maxH: maxSize, bg: custom ?? BG_PANEL, scale: opts.scale, cutY, grid, plotTint: !custom });
     cv = r ? r.canvas : emptyImage();
     if (r) compass(cv, view);
   } else if (view === 'sheet') {
-    cv = renderSheet(structure, { maxSize, title: opts.title ?? structure.name });
+    cv = renderSheet(structure, { maxSize, title: opts.title ?? structure.name, custom, cutY, grid });
   } else {
     throw new Error(`Unknown view "${opts.view}" (sheet|iso|iso-ne|iso-nw|iso-sw|top|south|north|east|west)`);
   }
@@ -454,18 +481,28 @@ function compass(cv, view) {
   if (t) cv.text(t, cv.w - 4, 2, [60, 60, 120], 1, { align: 'right' });
 }
 
-function renderSheet(structure, { maxSize, title }) {
-  const c = collect(structure);
-  if (!c) return emptyImage();
+function renderSheet(structure, { maxSize, title, custom = null, cutY = Infinity, grid = true }) {
+  const full = collect(structure);
+  if (!full) return emptyImage();
+  const cut = Number.isFinite(cutY);
+  const c = cut ? collect(structure, cutY) : full;
+  if (!c) return emptyImage(`NOTHING AT Y<=${cutY}`);
   const header = 30;
   const totalW = Math.min(maxSize, 1600);
   const isoMax = Math.round(totalW * 0.64);
-  const iso = renderIso(structure, { maxW: isoMax, maxH: isoMax, bg: BG_ISO });
-  const sideMax = totalW - iso.canvas.w - 12;
-  const panelH = Math.max(160, Math.round((iso.canvas.h - 30) / 3));
+  const iso = renderIso(structure, { maxW: isoMax, maxH: isoMax, bg: custom ?? BG_ISO, cutY, grid });
+  // TOP / SOUTH / EAST share one scale (pixels per block) sized to fill the right-hand column
+  const [W0, H0, D0] = c.size;
+  const { ml, mt, mr, mb } = ORTHO_MARGINS;
+  const colW = Math.max(160, totalW - iso.canvas.w - 12);
+  const colH = Math.max(iso.canvas.h + 10, 480);
+  const cell = Math.max(1, Math.min(24, Math.floor(Math.min(
+    (colH - 3 * (mt + mb + 16)) / (D0 + 2 * H0),
+    (colW - ml - mr) / Math.max(W0, D0),
+  ))));
   const views = [['top', 'TOP (NORTH UP)'], ['south', 'SOUTH ELEVATION (FRONT)'], ['east', 'EAST ELEVATION']];
   const panels = views.map(([v, cap]) => {
-    const r = renderOrtho(structure, v, { maxW: Math.max(160, sideMax), maxH: panelH, bg: BG_PANEL });
+    const r = renderOrtho(structure, v, { scale: cell, bg: custom ?? BG_PANEL, cutY, grid, plotTint: !custom });
     if (v === 'top') compass(r.canvas, 'top');
     return { r, cap };
   });
@@ -473,12 +510,13 @@ function renderSheet(structure, { maxSize, title }) {
   const rightH = panels.reduce((h, p) => h + p.r.canvas.h + 16, 0);
   const W = iso.canvas.w + 8 + rightW + 4;
   const H = header + Math.max(iso.canvas.h + 14, rightH + 4);
-  const cv = new Canvas(Math.max(W, 520), H, [250, 250, 252]);
-  // header
+  const cv = new Canvas(Math.max(W, 520), H, custom ?? [250, 250, 252]);
+  // header (size and block count describe the whole structure, even with a cutaway)
   cv.rect(0, 0, cv.w, header, [40, 46, 58]);
-  const [sx, sy, sz] = c.size;
+  const [sx, sy, sz] = full.size;
   cv.text(`${title ?? 'structure'}`, 10, 8, [255, 255, 255], 2);
-  cv.text(`${sx}×${sy}×${sz} (W×H×D)  ${structure.count} BLOCKS  FRONT = SOUTH`, cv.w - 10, 11, [200, 210, 225], 1, { align: 'right' });
+  const info = `${sx}×${sy}×${sz} (W×H×D)  ${full.vox.length} BLOCKS  FRONT = SOUTH${cut ? `  CUT ABOVE Y=${cutY}` : ''}`;
+  cv.text(info, cv.w - 10, 11, cut ? [255, 205, 120] : [200, 210, 225], 1, { align: 'right' });
   // iso
   cv.text('ISO VIEW FROM SOUTH-EAST', 8, header + 4, [70, 70, 90]);
   cv.paste(iso.canvas, 0, header + 14);

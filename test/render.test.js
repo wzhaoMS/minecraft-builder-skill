@@ -157,6 +157,44 @@ test('a 10×10×10 house sheet renders quickly with a sensible size', () => {
   assert.ok(r.width >= 400 && r.height >= 300 && Math.max(r.width, r.height) <= 1600, `${r.width}×${r.height}`);
 });
 
+test('options: background colour, showGrid:false, cutaway.y', () => {
+  const s = house();
+  for (const view of ['iso', 'top', 'sheet']) {
+    for (const background of [[10, 200, 30], '#0ac81e']) {
+      const img = decodePng(renderPreview(s, { view, background }).png);
+      const i = ((img.height - 1) * img.width) * 4; // bottom-left pixel is always background
+      assert.deepEqual([...img.data.subarray(i, i + 3)], [10, 200, 30], `${view} ${background}`);
+    }
+  }
+  assert.throws(() => renderPreview(s, { background: 'greenish' }), /background/);
+
+  // grid lines: a flat floor seen from the top is one colour without the grid, several with it
+  const floor = new Structure().fill(0, 0, 0, 19, 0, 19, 'white_concrete');
+  const rowColours = (opts) => {
+    const img = decodePng(renderPreview(floor, { view: 'top', scale: 10, ...opts }).png);
+    const y = 12 + 105, seen = new Set();
+    for (let x = 30; x < 220; x++) { const i = (y * img.width + x) * 4; seen.add(img.data.subarray(i, i + 3).join()); }
+    return seen.size;
+  };
+  assert.ok(rowColours({}) >= 2, 'grid lines visible by default');
+  assert.equal(rowColours({ showGrid: false }), 1, 'no grid lines with showGrid:false');
+
+  // cutaway: a red roof hides the blue floor from above until everything above y=4 is cut away
+  const box = new Structure().fill(0, 0, 0, 9, 0, 9, 'blue_concrete').fill(0, 5, 0, 9, 5, 9, 'red_concrete');
+  const count = (opts, pred) => {
+    const img = decodePng(renderPreview(box, { view: 'top', scale: 10, ...opts }).png);
+    let n = 0;
+    for (let i = 0; i < img.data.length; i += 4) if (pred(img.data[i], img.data[i + 1], img.data[i + 2])) n++;
+    return n;
+  };
+  const isRed = (r, g, b) => r > 100 && g < 60 && b < 60, isBlue = (r, g, b) => b > 100 && r < 70 && g < 70;
+  assert.ok(count({}, isRed) > 2000 && count({}, isBlue) < 300);
+  assert.ok(count({ cutaway: { y: 4 } }, isBlue) > 2000 && count({ cutaway: { y: 4 } }, isRed) === 0);
+  const cutSheet = renderPreview(box, { view: 'sheet', cutaway: { y: 4 } });
+  assert.ok(!cutSheet.png.equals(renderPreview(box, { view: 'sheet' }).png));
+  assert.ok(renderPreview(box, { view: 'sheet', cutaway: { y: -1 } }).width <= 400, 'everything cut away → placeholder');
+});
+
 test('performance: ~150k-voxel city renders (sheet) in well under 3 s', () => {
   const s = new Structure({ name: 'city' });
   s.fill(0, 0, 0, 119, 0, 119, 'gray_concrete');
