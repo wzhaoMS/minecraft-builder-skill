@@ -325,6 +325,22 @@ test('watch session: a player edit under an earlier block is an original too, no
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('undo drains liquids before taking their container down, and puts grass back last', async () => {
+  const dir = tmp();
+  const blocks = { '1,-1,1': 'grass_block' };
+  const sim = new SimTransport({ blocks });
+  const pool = new Structure({ name: 'pool' }).fill(0, 0, 0, 2, 1, 2, 'stone_bricks', { mode: 'walls' }).set(1, 0, 1, 'water').set(1, -1, 1, 'stone');
+  const r = await executeBuild({ structure: pool, transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet });
+  const mark = sim.commands.length;
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.ok, true);
+  const edits = sim.commands.slice(mark).filter((c) => /^(fill|setblock) /.test(c));
+  assert.match(edits[0], /^setblock 1 0 1 air/, `liquid first: ${edits[0]}`);
+  assert.match(edits.at(-1), /^setblock 1 -1 1 grass_block/, `grass last: ${edits.at(-1)}`);
+  assert.match(sim.get(1, -1, 1), /^grass_block/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('snapshot ids are unique and never overwrite each other', () => {
   const ids = new Set(Array.from({ length: 200 }, () => newSnapshotId('same name')));
   assert.equal(ids.size, 200);
