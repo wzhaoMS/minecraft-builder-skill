@@ -213,3 +213,27 @@ test('performance: ~150k-voxel city renders (sheet) in well under 3 s', () => {
   assert.ok(ms < 3000, `sheet took ${ms.toFixed(0)} ms`);
   assert.ok(decodePng(r.png).width === r.width);
 });
+
+test('scale: a ~1M-voxel 400×150×400 city and a sparse 3000-block-wide layout both render quickly', () => {
+  const city = new Structure({ name: 'big' });
+  city.fill(0, 0, 0, 399, 0, 399, 'gray_concrete');
+  let k = 0;
+  for (let bx = 2; bx + 9 < 400; bx += 16) {
+    for (let bz = 2; bz + 9 < 400; bz += 16) {
+      city.fill(bx, 1, bz, bx + 9, 10 + ((bx * 3 + bz * 5) % 139), bz + 9, k++ % 3 ? 'stone_bricks' : 'glass', { mode: 'walls' });
+    }
+  }
+  assert.ok(city.count > 900000, `count ${city.count}`);
+  let t0 = performance.now();
+  const r = renderPreview(city, { view: 'sheet' });
+  const ms = performance.now() - t0;
+  assert.ok(ms < 4000, `1M-voxel sheet took ${ms.toFixed(0)} ms`);
+  assert.ok(Math.max(r.width, r.height) <= 1600);
+
+  // bounding volume > 64M cells → sparse occupancy; the ground plane spans ~6000×3000 px before downscaling
+  const sparse = new Structure();
+  for (const [ox, oz] of [[0, 0], [3000, 3000], [3000, 0]]) sparse.fill(ox, 0, oz, ox + 20, 3, oz + 20, 'bricks', { mode: 'walls' });
+  t0 = performance.now();
+  for (const view of ['iso', 'iso-sw', 'top']) assert.ok(renderPreview(sparse, { view }).width <= 1600, view);
+  assert.ok(performance.now() - t0 < 6000, 'sparse renders');
+});
