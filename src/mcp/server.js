@@ -95,7 +95,10 @@ export const TOOLS = [
     description: 'Copy a region of the world into an inline JSON blueprint (and a preview image) — to inspect what is actually built or to duplicate it elsewhere.',
     inputSchema: {
       type: 'object',
-      properties: { from: { type: 'array', items: { type: 'integer' } }, to: { type: 'array', items: { type: 'integer' } }, keepAir: { type: 'boolean' } },
+      properties: {
+        from: { type: 'array', items: { type: 'integer' } }, to: { type: 'array', items: { type: 'integer' } }, keepAir: { type: 'boolean' },
+        dimension: { type: 'string', enum: ['overworld', 'the_nether', 'the_end'], default: 'overworld' },
+      },
       required: ['from', 'to'],
     },
   },
@@ -218,12 +221,14 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
       }
       return text(out);
     },
-    async mc_snapshot({ from, to, keepAir }) {
+    async mc_snapshot({ from, to, keepAir, dimension }) {
       const a = parseCoords(from), b = parseCoords(to);
       const box = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2]), Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])];
       const vol = (box[3] - box[0] + 1) * (box[4] - box[1] + 1) * (box[5] - box[2] + 1);
       if (vol > 200_000) throw new Error(`Region too large for an inline snapshot (${vol} blocks > 200000); use the CLI: mcb snapshot -o file.schem`);
       const t = await getTransport();
+      const { normalizeDimension, DIMENSIONS } = await import('../build.js');
+      t.setDimension?.(DIMENSIONS[normalizeDimension(dimension ?? 'overworld')].id);
       const { withGamerules } = await import('../gamerules.js');
       const cap = await withGamerules(t, { sendCommandFeedback: false }, () => captureRegion(t, box), { journalDir: stateDir(cfg) });
       let s = cap.structure;

@@ -362,20 +362,36 @@ async function cmdWatch(flags, out) {
   let placement = null; // where the session builds: fixed by the first build that reached the world
   const placed = new Structure(); // every position any version of the design has occupied
   const baseline = new Structure(); // the world as it was before the first build touched each block
-  const changedSoFar = new Structure(); // latest state this session set at every block it changed
+  // every state the session has placed (or was about to place) at each position, newest last:
+  // after an interrupted rebuild the world may hold any of them, and undo must recognise them all
+  const owned = new Map();
+  const MAX_STATES = 16;
   let unionBox = null, undoId = null, undoNoted = false;
   let busy = null, again = false, stopping = false, n = 0;
   const saveUndo = (report) => {
     // one snapshot for the whole session, rewritten (atomically) before every rebuild changes
     // anything: `mcb undo <id>` reverts all of it, even after a crash half-way through a rebuild
     if (!o.undo || !o.stateDir || !report.changed) return;
-    report.changed.forEach((x, y, z, b) => changedSoFar.set(x, y, z, b));
-    if (!changedSoFar.count) return;
+    report.changed.forEach((x, y, z, b) => {
+      const k = `${x},${y},${z}`;
+      const list = (owned.get(k) ?? []).filter((s) => s !== b);
+      list.push(b);
+      if (list.length > MAX_STATES) list.shift();
+      owned.set(k, list);
+    });
+    if (!owned.size) return;
+    const after = new Structure();
+    const afterAlt = [];
+    for (const [k, list] of owned) {
+      const [x, y, z] = k.split(',').map(Number);
+      after.set(x, y, z, list[list.length - 1]);
+      for (let i = list.length - 2, layer = 0; i >= 0; i--, layer++) (afterAlt[layer] ??= new Structure()).set(x, y, z, list[i]);
+    }
     const b = report.snapshotBox ?? report.affectedBox;
     unionBox = unionBox ? [Math.min(unionBox[0], b[0]), Math.min(unionBox[1], b[1]), Math.min(unionBox[2], b[2]), Math.max(unionBox[3], b[3]), Math.max(unionBox[4], b[4]), Math.max(unionBox[5], b[5])] : [...b];
     undoId ??= newSnapshotId(`watch-${report.name}`);
     saveSnapshot(o.stateDir, {
-      id: undoId, name: report.name, box: unionBox, structure: baseline, after: changedSoFar,
+      id: undoId, name: report.name, box: unionBox, structure: baseline, after, afterAlt,
       meta: { origin: report.origin, facing: report.facing, dimension: report.dimension, server: transport.serverKey ?? null, watch: true, groundLayer: !!report.snapshotBox },
     }, { overwrite: true });
     if (!undoNoted) { out.print(`undo everything this session built with: mcb undo ${undoId}${configFlag(flags)}`); undoNoted = true; }
@@ -416,25 +432,32 @@ async function cmdWatch(flags, out) {
     })();
     return busy;
   };
+  // Ctrl+C handling is in place before the first build: the first press lets the running rebuild
+  // finish (so gamerules are restored and its undo record is complete), a second one quits at once
+  const stopRequested = new Promise((resolve) => {
+    const onStop = () => {
+      stopping = true;
+      if (busy) out.log('stopping after the current rebuild… (Ctrl+C again to quit now)');
+      process.once('SIGINT', () => process.exit(130));
+      resolve();
+    };
+    process.once('SIGINT', onStop);
+    process.once('SIGTERM', onStop);
+  });
   await rebuild();
-  out.print(`watching ${path.resolve(file)} — save it to rebuild (Ctrl+C to stop)`);
   let timer = null;
-  const watcher = fs.watch(path.resolve(file), () => {
-    clearTimeout(timer);
-    timer = setTimeout(rebuild, 300);
-  });
-  await new Promise((resolve) => {
-    process.once('SIGINT', resolve);
-    process.once('SIGTERM', resolve);
-  });
-  stopping = true;
-  clearTimeout(timer);
-  watcher.close();
-  if (busy) {
-    out.log('waiting for the current rebuild to finish… (Ctrl+C again to quit now)');
-    process.once('SIGINT', () => process.exit(130));
-    await busy;
+  let watcher = null;
+  if (!stopping) {
+    out.print(`watching ${path.resolve(file)} — save it to rebuild (Ctrl+C to stop)`);
+    watcher = fs.watch(path.resolve(file), () => {
+      clearTimeout(timer);
+      timer = setTimeout(rebuild, 300);
+    });
   }
+  await stopRequested;
+  clearTimeout(timer);
+  watcher?.close();
+  if (busy) await busy;
   await transport.close();
   return 0;
 }

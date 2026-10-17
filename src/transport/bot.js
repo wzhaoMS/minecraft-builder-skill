@@ -70,6 +70,7 @@ async function spawnBotOnce(cfg) {
   if (cfg.version) opts.version = cfg.version;
   log(`connecting to ${opts.host}:${opts.port} as ${opts.username} (${opts.auth})…`);
   const bot = mineflayer.createBot(opts);
+  bot.__mcbChunks = trackChunks(bot);
   const opLevel = { value: null };
   bot._client.on('entity_status', (p) => {
     if (bot.entity && p.entityId === bot.entity.id && p.entityStatus >= 24 && p.entityStatus <= 28) {
@@ -114,6 +115,28 @@ async function spawnBotOnce(cfg) {
   return { bot, opLevel };
 }
 
+/**
+ * Remember which chunk columns arrived with real block data, per world object. mineflayer also
+ * creates empty placeholder columns when a light update precedes the chunk; those must not be
+ * read as "all air" (that would corrupt undo snapshots and blind the container check).
+ */
+function trackChunks(bot) {
+  let world = null;
+  const loaded = new Set();
+  const sync = (w) => { if (w !== world) { loaded.clear(); world = w; } };
+  const add = (cx, cz) => { sync(bot.world); loaded.add(`${cx},${cz}`); };
+  // mineflayer's own handlers were registered first, so the column is in bot.world by now
+  bot._client.on('map_chunk', (p) => add(p.x, p.z));
+  bot._client.on('map_chunk_bulk', (p) => { for (const m of p.meta ?? []) add(m.x, m.z); });
+  bot._client.on('unload_chunk', (p) => { sync(bot.world); loaded.delete(`${p.chunkX},${p.chunkZ}`); });
+  return {
+    has(w, cx, cz) {
+      sync(w);
+      return loaded.has(`${cx},${cz}`);
+    },
+  };
+}
+
 function kickText(reason) {
   if (typeof reason === 'string') {
     try { return flattenText(JSON.parse(reason)); } catch { return reason; }
@@ -154,6 +177,9 @@ export class BotTransport {
     this.seq = 0;
     this.closed = false;
     this.endReason = null;
+    // the world reads and teleports refer to; builds set it explicitly. Default: the overworld —
+    // never "wherever the bot happens to be" (it logs in where it last was, e.g. the Nether)
+    this.dimension = 'minecraft:overworld';
     this.isOp = cfg.opLevel?.value != null ? cfg.opLevel.value >= 2 : undefined;
     /** Ordered queue of unacknowledged sends: feedback goes to the oldest entry. */
     this._queue = [];
@@ -166,6 +192,10 @@ export class BotTransport {
     const onEnd = (reason) => { this.closed = true; this.endReason = reason; this._failAll(new TransportError(`Bot disconnected (${reason})`, { code: 'ENDED' })); };
     const onKicked = (reason) => { this.endReason = kickText(reason); };
     const onError = () => {};
+    // Columns that arrived with real block data. mineflayer also creates EMPTY placeholder columns
+    // when a light update comes before the chunk itself — reading those would report air.
+    // (The tracker is installed when the bot is created, so it has seen every chunk since login.)
+    this._chunkTracker = bot.__mcbChunks ?? null;
     bot.on('message', onMessage);
     bot.on('end', onEnd);
     bot.on('kicked', onKicked);
@@ -176,6 +206,16 @@ export class BotTransport {
       bot.removeListener('kicked', onKicked);
       bot.removeListener('error', onError);
     };
+  }
+
+  /** Has the chunk column containing block x,z arrived with real data (not a light-only placeholder)? */
+  hasChunk(x, z) {
+    // a bot still standing in another world (it logs in where it last was) has no data for ours
+    const here = this.currentDimension;
+    if (here && this.dimension && here !== this.dimension) return false;
+    const t = this._chunkTracker;
+    if (!t) return !!this.bot.world?.getColumn?.(x >> 4, z >> 4);
+    return t.has(this.bot.world, x >> 4, z >> 4);
   }
 
   /** Re-join after a disconnect (kick, timeout, server restart) and continue with the same object. */
@@ -390,7 +430,7 @@ export class BotTransport {
 
   /** Dimension (e.g. "minecraft:the_nether") the bot should work in; applied on the next teleport. */
   setDimension(id) {
-    this.dimension = id;
+    this.dimension = id ?? 'minecraft:overworld';
   }
 
   /** Teleport the bot (flying, creative) and wait for the surrounding chunks to arrive. */
@@ -403,16 +443,13 @@ export class BotTransport {
 
   /** Wait until the client has the chunks covering the area (server has them loaded too). */
   async waitForArea({ x1, z1, x2, z2 }, timeoutMs = 20_000) {
-    const V = Vec3();
     const t0 = Date.now();
     const cx1 = Math.floor(x1 / 16), cx2 = Math.floor(x2 / 16), cz1 = Math.floor(z1 / 16), cz2 = Math.floor(z2 / 16);
-    const p = new V(0, 0, 0);
     while (Date.now() - t0 < timeoutMs) {
       let missing = 0;
       for (let cx = cx1; cx <= cx2; cx++) {
         for (let cz = cz1; cz <= cz2; cz++) {
-          p.x = cx * 16; p.z = cz * 16;
-          if (!this.bot.world.getColumnAt(p)) missing++;
+          if (!this.hasChunk(cx * 16, cz * 16)) missing++;
         }
       }
       if (!missing) return true;
@@ -454,6 +491,7 @@ export class BotTransport {
    * Reads the chunk's state id directly (≈2000× faster than bot.blockAt) and caches the string.
    */
   readBlock(x, y, z) {
+    if (!this.hasChunk(x, z)) return undefined;
     if (!this._rv) { const V = Vec3(); this._rv = new V(0, 0, 0); this._rp = new V(0, 0, 0); }
     this._rv.x = x; this._rv.y = 0; this._rv.z = z;
     const col = this.bot.world.getColumnAt(this._rv);

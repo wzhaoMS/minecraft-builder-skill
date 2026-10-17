@@ -54,10 +54,20 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
         code: 'UNDO_NEEDS_READ', hint: 'Use --transport bot, or pass --force to restore without checking.',
       });
     }
+    // states this build may have left at a position: `after`, plus — for watch sessions — every
+    // other state an earlier (possibly interrupted) revision placed there
+    const alts = data.afterAlt ?? [];
+    const ownedStates = (x, y, z, after) => {
+      const out = [after];
+      for (const s of alts) { const b = s.get(x, y, z); if (b != null) out.push(b); }
+      return out;
+    };
     data.after.forEach((x, y, z, after) => {
       const before = data.structure.get(x, y, z);
       if (before == null) return;
-      if (blockMatches(after, before, { strict: true })) return; // the build did not change this block
+      const owned = ownedStates(x, y, z, after);
+      // nothing this build placed here differs from the original: nothing to undo
+      if (owned.every((b) => blockMatches(b, before, { strict: true }))) return;
       if (current) {
         const now = current.get(x, y, z);
         if (now == null) {
@@ -65,7 +75,8 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
           unreadable++;
           return;
         }
-        if (!blockMatches(after, now) && !blockMatches(before, now, { strict: true })) {
+        if (blockMatches(before, now, { strict: true })) return; // already as it was
+        if (!owned.some((b) => blockMatches(b, now))) {
           conflicts.push({ pos: [x, y, z], expected: after, found: now });
           return;
         }
@@ -80,15 +91,16 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
       for (let x = x1; x <= x2; x++) {
         for (let z = z1; z <= z2; z++) {
           if (data.after.get(x, gy, z) != null) continue;
-          const coveredByBuild = data.after.get(x, gy + 1, z);
-          if (coveredByBuild == null || isAir(coveredByBuild)) continue;
+          const ownedAbove = [data.after.get(x, gy + 1, z), ...alts.map((s) => s.get(x, gy + 1, z))].filter((b) => b != null);
+          if (!ownedAbove.some((b) => !isAir(b))) continue;
           const before = data.structure.get(x, gy, z);
           if (!before || !DECAYS_UNDER_COVER.has(blockName(before))) continue;
           const now = current.get(x, gy, z);
           if (now == null) { unreadable++; continue; }
           if (blockName(now) !== 'dirt') continue;
           const above = restore.get(x, gy + 1, z) ?? current.get(x, gy + 1, z);
-          if (above == null || isAir(above)) ground.set(x, gy, z, before);
+          // only when the cell is known to end up uncovered (unreadable cover ≠ no cover)
+          if (above != null && isAir(above)) ground.set(x, gy, z, before);
         }
       }
     }

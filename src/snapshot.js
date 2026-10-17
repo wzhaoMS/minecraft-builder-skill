@@ -80,14 +80,20 @@ function rleDecode(rle, box, ids, s) {
 /**
  * Encode a snapshot: `structure` = world blocks before the build (whole box),
  * `after` = what the build set (null where it didn't touch) — lets undo restore only what the
- * build changed and detect edits made since.
+ * build changed and detect edits made since. `afterAlt` (optional, watch sessions): further
+ * layers of states the session may have left at a position (earlier, possibly interrupted
+ * revisions), so undo also recognises those as its own.
  */
-export function encodeSnapshot({ id, name, box, structure, after = null, meta = {} }) {
+export function encodeSnapshot({ id, name, box, structure, after = null, afterAlt = [], meta = {} }) {
   const palette = [null];
   const pidx = new Map();
   const rle = rleEncode(structure, box, palette, pidx);
   const afterRle = after ? rleEncode(after, box, palette, pidx) : null;
-  const json = JSON.stringify({ format: 'mcb-snapshot', version: 2, id, name, createdAt: new Date().toISOString(), box, palette, rle, after: afterRle, meta });
+  const altRle = afterAlt.filter((s) => s?.count).map((s) => rleEncode(s, box, palette, pidx));
+  const json = JSON.stringify({
+    format: 'mcb-snapshot', version: 2, id, name, createdAt: new Date().toISOString(), box, palette, rle, after: afterRle,
+    ...(altRle.length ? { afterAlt: altRle } : {}), meta,
+  });
   return zlib.gzipSync(json);
 }
 
@@ -97,13 +103,14 @@ export function decodeSnapshot(buf) {
   const s = new Structure({ name: data.name ?? 'snapshot' });
   const ids = data.palette.map((b) => (b == null ? 0 : s.idOf(b)));
   rleDecode(data.rle, data.box, ids, s);
-  let after = null;
-  if (data.after) {
-    after = new Structure({ name: `${data.name ?? 'snapshot'}-after` });
-    const aids = data.palette.map((b) => (b == null ? 0 : after.idOf(b)));
-    rleDecode(data.after, data.box, aids, after);
-  }
-  return { ...data, structure: s, after };
+  const layer = (rle, label) => {
+    const out = new Structure({ name: `${data.name ?? 'snapshot'}-${label}` });
+    const lids = data.palette.map((b) => (b == null ? 0 : out.idOf(b)));
+    return rleDecode(rle, data.box, lids, out);
+  };
+  const after = data.after ? layer(data.after, 'after') : null;
+  const afterAlt = (data.afterAlt ?? []).map((rle, i) => layer(rle, `alt${i}`));
+  return { ...data, structure: s, after, afterAlt };
 }
 
 export function snapshotDir(stateDir) {
@@ -114,17 +121,28 @@ export function saveSnapshot(stateDir, snap, { overwrite = false } = {}) {
   const dir = snapshotDir(stateDir);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${snap.id}.json.gz`);
-  if (!overwrite && fs.existsSync(file)) throw Object.assign(new Error(`EEXIST: snapshot ${snap.id} already exists`), { code: 'EEXIST' });
-  // write a temp file and rename it into place: a crash mid-write never leaves a torn snapshot,
-  // and a rewritten (watch) snapshot is replaced atomically
+  const exists = () => Object.assign(new Error(`EEXIST: snapshot ${snap.id} already exists`), { code: 'EEXIST' });
+  if (!overwrite && fs.existsSync(file)) throw exists();
+  // write a temp file, then publish it in one step: a crash mid-write never leaves a torn snapshot.
+  // Overwrites (watch) replace atomically via rename; new snapshots are hard-linked into place,
+  // which fails instead of clobbering if the name appeared in the meantime.
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, encodeSnapshot(snap));
   try {
-    if (!overwrite && fs.existsSync(file)) throw Object.assign(new Error(`EEXIST: snapshot ${snap.id} already exists`), { code: 'EEXIST' });
-    fs.renameSync(tmp, file);
-  } catch (e) {
+    if (overwrite) {
+      fs.renameSync(tmp, file);
+    } else {
+      try {
+        fs.linkSync(tmp, file);
+      } catch (e) {
+        if (e.code === 'EEXIST') throw exists();
+        // filesystems without hard links: best effort
+        if (fs.existsSync(file)) throw exists();
+        fs.renameSync(tmp, file);
+      }
+    }
+  } finally {
     fs.rmSync(tmp, { force: true });
-    throw e;
   }
   return file;
 }

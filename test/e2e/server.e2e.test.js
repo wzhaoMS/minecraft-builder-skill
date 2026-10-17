@@ -269,3 +269,16 @@ test('nether builds mute and restore command feedback in the nether itself, and 
   assert.deepEqual({ nether: await feedback('minecraft:the_nether'), overworld: await feedback('minecraft:overworld') }, before);
   assert.ok(!fs.readdirSync(state).some((f) => f.startsWith('gamerules-pending')), 'nothing left in the journal');
 });
+test('a bot that logs in somewhere else (the Nether) still reads the overworld by default', { skip: !enabled || !cfg.rconPassword }, async () => {
+  await rcon.command(`execute in minecraft:the_nether run tp ${cfg.username} 0 80 0`, { allowErrors: true });
+  const fresh = await openTransport({ ...cfg, transport: 'bot' }, { log: () => {} });
+  try {
+    const { captureRegion } = await import('../../src/snapshot.js');
+    const cap = await captureRegion(fresh, [1300, -61, 1300, 1304, -61, 1304]);
+    assert.equal(cap.unknown, 0);
+    assert.deepEqual(Object.keys(cap.structure.blockCounts()), ['grass_block[snowy=false]']);
+  } finally {
+    await fresh.close();
+    await ensureBot();
+  }
+});

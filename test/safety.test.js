@@ -235,6 +235,46 @@ test('server identity: only a process carrying our launch token counts as our se
   }
 });
 
+test('undo recognises every state a watch session may have left (interrupted removal)', async () => {
+  const dir = tmp();
+  const sim = new SimTransport();
+  sim.world.set('0,0,0', 'stone'); // revision A placed stone; revision B wanted it gone but died first
+  const { encodeSnapshot } = await import('../src/snapshot.js');
+  const before = new Structure().set(0, 0, 0, 'air');
+  const file = path.join(dir, 'w.json.gz');
+  fs.writeFileSync(file, encodeSnapshot({
+    id: 'w', name: 'w', box: [0, 0, 0, 0, 0, 0], structure: before,
+    after: new Structure().set(0, 0, 0, 'air'), afterAlt: [new Structure().set(0, 0, 0, 'stone')],
+    meta: { watch: true },
+  }));
+  const u = await undoBuild(sim, file, { ...quiet });
+  assert.equal(u.ok, true, JSON.stringify(u));
+  assert.equal(sim.get(0, 0, 0), 'air', 'the stone the interrupted session left is removed');
+  sim.world.set('0,0,0', 'stone');
+  const f = await undoBuild(sim, file, { force: true, ...quiet });
+  assert.equal(f.ok, true);
+  assert.equal(sim.get(0, 0, 0), 'air', 'also without reading (--force)');
+  sim.world.set('0,0,0', 'gold_block'); // not something the session ever placed → a conflict
+  const c = await undoBuild(sim, file, { ...quiet });
+  assert.equal(c.conflicts, 1);
+  assert.equal(sim.get(0, 0, 0), 'gold_block');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('ground under unreadable cover is left alone', async () => {
+  const dir = tmp();
+  const sim = new SimTransport({ blocks: { '0,-1,0': 'grass_block' } });
+  const r = await executeBuild({ structure: new Structure().set(0, 0, 0, 'stone'), transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet });
+  sim.world.set('0,-1,0', 'dirt');
+  sim.unreadable = (x, y, z) => x === 0 && y === 0 && z === 0; // the cover can't be read
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.ok, false);
+  assert.equal(u.unreadable, 1);
+  assert.equal(sim.get(0, -1, 0), 'dirt', 'no grass under a block that may still be there');
+  assert.equal(fs.readdirSync(path.join(dir, 'undo')).filter((f) => f.endsWith('.tmp')).length, 0, 'no temp files left');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('snapshot ids are unique and never overwrite each other', () => {
   const ids = new Set(Array.from({ length: 200 }, () => newSnapshotId('same name')));
   assert.equal(ids.size, 200);
