@@ -261,7 +261,8 @@ test('nether builds mute and restore command feedback in the nether itself, and 
   const feedback = async (dim) => /currently set to: (\w+)/.exec((await rcon.query(`execute in ${dim} run gamerule send_command_feedback`)).text)?.[1];
   const before = { nether: await feedback('minecraft:the_nether'), overworld: await feedback('minecraft:overworld') };
   const s = await tower();
-  const r = await executeBuild({ structure: s, transport: bot, at: [96, 100, 96], dimension: 'the_nether', clear: 1, verify: true, stateDir: state, force: true });
+  // above the bedrock roof: no lava there to flow into the cleared area (Nether terrain differs per seed)
+  const r = await executeBuild({ structure: s, transport: bot, at: [96, 130, 96], dimension: 'the_nether', clear: 1, verify: true, stateDir: state, force: true });
   assert.equal(r.dimension, 'the_nether');
   assert.equal(r.verify.remaining, 0, JSON.stringify(r.verify.examples));
   assert.deepEqual({ nether: await feedback('minecraft:the_nether'), overworld: await feedback('minecraft:overworld') }, before);

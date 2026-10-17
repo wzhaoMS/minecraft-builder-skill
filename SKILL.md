@@ -39,9 +39,9 @@ need no flags. You can also create it by hand:
   "rconPort": 25575, "rconPassword": "…", "player": "Steve" }
 ```
 
-`transport`: `auto` (default: the bot, falling back to RCON if it can't join), `bot` (can read
-blocks → verify/undo/snapshot, visible "BuilderBot" player), `rcon` (server console; fastest, no
-op needed, no verify/undo).
+`transport`: `auto` (default: the bot, falling back to RCON if it can't join or isn't an operator —
+the report then says undo/verify are off), `bot` (can read blocks → verify/undo/snapshot, visible
+"BuilderBot" player), `rcon` (server console; fastest, no op needed, no verify/undo).
 
 Where settings come from (first match wins): command-line flags → `MCB_*` environment variables
 (`MCB_HOST`, `MCB_PORT`, `MCB_RCON_PORT`, `MCB_RCON_PASSWORD`, `MCB_USERNAME`, `MCB_PLAYER`,
