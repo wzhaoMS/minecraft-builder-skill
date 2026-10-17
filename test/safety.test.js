@@ -275,6 +275,30 @@ test('ground under unreadable cover is left alone', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('watch session: originals are taken when the session first changes a block (player edits in between survive)', async () => {
+  const { WatchSession } = await import('../src/watch.js');
+  const dir = tmp();
+  const sim = new SimTransport();
+  const session = new WatchSession();
+  const run = (s) => executeBuild({
+    structure: s, transport: sim, ...session.buildOptions({ at: [0, 0, 0], stateDir: dir }), saveUndo: false, ...quiet,
+    beforeChanges: (rep) => { if (session.record(rep)) saveSnapshot(dir, session.snapshot({ id: 'w', name: 'w' }), { overwrite: true }); },
+  });
+  await run(new Structure().set(0, 0, 0, 'stone').set(2, 0, 0, 'stone')); // (1,0,0) lies in the box, untouched
+  sim.world.set('1,0,0', 'gold_block'); // a player builds there afterwards
+  await run(new Structure().set(0, 0, 0, 'stone').set(1, 0, 0, 'stone').set(2, 0, 0, 'stone'));
+  assert.equal(sim.get(1, 0, 0), 'stone');
+  await run(new Structure().set(0, 0, 0, 'stone')); // later version drops two blocks again
+  assert.equal(sim.get(1, 0, 0), 'gold_block', 'dropped block goes back to what was there before the session changed it');
+  assert.equal(sim.get(2, 0, 0), 'air');
+  await run(new Structure().set(0, 0, 0, 'stone').set(1, 0, 0, 'stone'));
+  const u = await undoBuild(sim, path.join(dir, 'undo', 'w.json.gz'), { stateDir: dir, ...quiet });
+  assert.equal(u.ok, true, JSON.stringify(u));
+  assert.equal(sim.get(1, 0, 0), 'gold_block', "the player's gold survives the undo");
+  assert.equal(sim.get(0, 0, 0), 'air');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('snapshot ids are unique and never overwrite each other', () => {
   const ids = new Set(Array.from({ length: 200 }, () => newSnapshotId('same name')));
   assert.equal(ids.size, 200);

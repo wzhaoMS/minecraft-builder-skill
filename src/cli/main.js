@@ -474,21 +474,15 @@ async function cmdWatch(flags, out) {
   // updated in place and one undo id covers everything), unless --new-session
   const request = JSON.stringify({ at: flags.at ?? null, near: o.near ?? null, side: o.side ?? null, facing: o.facing ?? null, anchor: o.anchor ?? null, rotate: o.rotate ?? null, mirror: o.mirror ?? null, dimension: o.dimension ?? null, gap: o.gap ?? null });
   const transport = await openTransport(cfg, { log: (m) => out.log(m) });
-  const { Structure } = await import('../core/structure.js');
   const { saveSnapshot, newSnapshotId, decodeSnapshot } = await import('../snapshot.js');
   if (flags.at) {
     const pose = String(flags.at).includes('~') ? await poseOf(transport, o.near ?? cfg.player) : null;
     o.at = parseCoords(flags.at, pose && [pose.x, pose.y, pose.z], '--at');
     if (pose?.dimension && !o.dimension) o.dimension = pose.dimension;
   }
-  let placement = null; // where the session builds: fixed by the first build that reached the world
-  let placed = new Structure(); // every position any version of the design has occupied
-  let baseline = new Structure(); // the world as it was before the first build touched each block
-  // every state the session has placed (or was about to place) at each position, newest last:
-  // after an interrupted rebuild the world may hold any of them, and undo must recognise them all
-  const owned = new Map();
-  const MAX_STATES = 16;
-  let unionBox = null, undoId = null, undoNoted = false;
+  const { WatchSession } = await import('../watch.js');
+  let session = new WatchSession();
+  let undoId = null, undoNoted = false;
   let busy = null, again = false, stopping = false, n = 0;
   const undoCommand = () => `${selfCommand()} undo ${undoId}${configFlag(flags)}`;
 
@@ -499,62 +493,27 @@ async function cmdWatch(flags, out) {
       if (data.meta?.file !== fileAbs || data.meta?.request !== request || !data.meta?.placement) continue;
       if (data.meta.server && transport.serverKey && data.meta.server !== transport.serverKey) continue;
       undoId = data.id ?? snap.id;
-      baseline = data.structure;
-      unionBox = data.box;
-      placement = data.meta.placement;
-      const layers = [data.after, ...(data.afterAlt ?? [])].filter(Boolean);
-      for (let i = layers.length - 1; i >= 0; i--) {
-        layers[i].forEach((x, y, z, b) => {
-          const k = `${x},${y},${z}`;
-          owned.set(k, [...(owned.get(k) ?? []), b]);
-          if (!placed.has(x, y, z)) placed.set(x, y, z, b);
-        });
-      }
+      session = WatchSession.fromSnapshot(data);
       out.log(`continuing watch session ${undoId} from ${new Date(snap.mtime).toLocaleString()} (same file and place; --new-session starts over)`);
       break;
     }
   }
 
-  const saveUndo = (report) => {
-    // one snapshot for the whole session, rewritten (atomically) before every rebuild changes
-    // anything: `mcb undo <id>` reverts all of it, even after a crash half-way through a rebuild
-    if (!o.undo || !o.stateDir || !report.changed) return;
-    report.changed.forEach((x, y, z, b) => {
-      const k = `${x},${y},${z}`;
-      const list = (owned.get(k) ?? []).filter((st) => st !== b);
-      list.push(b);
-      if (list.length > MAX_STATES) list.shift();
-      owned.set(k, list);
-    });
-    if (!owned.size) return;
-    const after = new Structure();
-    const afterAlt = [];
-    for (const [k, list] of owned) {
-      const [x, y, z] = k.split(',').map(Number);
-      after.set(x, y, z, list[list.length - 1]);
-      for (let i = list.length - 2, layer = 0; i >= 0; i--, layer++) (afterAlt[layer] ??= new Structure()).set(x, y, z, list[i]);
-    }
-    const b = report.snapshotBox ?? report.affectedBox;
-    unionBox = unionBox ? [Math.min(unionBox[0], b[0]), Math.min(unionBox[1], b[1]), Math.min(unionBox[2], b[2]), Math.max(unionBox[3], b[3]), Math.max(unionBox[4], b[4]), Math.max(unionBox[5], b[5])] : [...b];
+  // one snapshot for the whole session, rewritten (atomically) before every rebuild changes
+  // anything: `mcb undo <id>` reverts all of it, even after a crash half-way through a rebuild
+  const beforeChanges = (report) => {
+    const changed = session.record(report, { clear: o.clear });
+    if (!changed || !o.undo || !o.stateDir) return;
     undoId ??= newSnapshotId(`watch-${report.name}`);
-    saveSnapshot(o.stateDir, {
-      id: undoId, name: report.name, box: unionBox, structure: baseline, after, afterAlt,
-      meta: {
-        origin: report.origin, facing: report.facing, dimension: report.dimension, server: transport.serverKey ?? null,
-        watch: true, groundLayer: !!report.snapshotBox, file: fileAbs, request, placement,
-      },
-    }, { overwrite: true });
+    saveSnapshot(o.stateDir, session.snapshot({
+      id: undoId, name: report.name,
+      meta: { origin: report.origin, facing: report.facing, dimension: report.dimension, server: transport.serverKey ?? null, groundLayer: !!report.snapshotBox, file: fileAbs, request },
+    }), { overwrite: true });
     if (!undoNoted) {
       out.print(`undo everything this session built with: ${undoCommand()}`);
       out.event({ schema: 'mcb.watch-event/1', event: 'session', undo: { id: undoId, command: undoCommand() } });
       undoNoted = true;
     }
-  };
-  const beforeChanges = (report) => {
-    if (report.snapshot) report.snapshot.forEach((x, y, z, b) => { if (!baseline.has(x, y, z)) baseline.set(x, y, z, b); });
-    placement ??= { origin: report.origin, facing: report.facing, dimension: report.dimension, cleared: !!o.clear };
-    report.world.forEach((x, y, z, b) => placed.set(x, y, z, b));
-    saveUndo(report);
   };
   const once = async () => {
     n++;
@@ -563,12 +522,8 @@ async function cmdWatch(flags, out) {
         // another command logging in as the same bot kicks this one: rejoin instead of giving up
         if (transport.closed && transport.reconnect) { out.log('bot was disconnected — reconnecting…'); await transport.reconnect(); }
         const s = await loadWithParams(file, flags);
-        const opts = placement
-          ? { ...o, at: placement.origin, anchor: 'origin', facing: placement.facing, near: undefined, rotate: undefined, clear: false, dimension: placement.dimension }
-          : o;
         const report = await executeBuild({
-          structure: s, transport, ...opts, previousWorld: placement ? placed : undefined, baseline: placement?.cleared ? null : baseline,
-          saveUndo: false, beforeChanges, handleSignals: false,
+          structure: s, transport, ...session.buildOptions(o), saveUndo: false, beforeChanges, handleSignals: false,
           version: cfg.version ?? transport.version, log: (m) => out.log(m), onProgress: (p) => out.progress(p),
         });
         out.print(`[${new Date().toLocaleTimeString()}] #${n} ${report.ok ? '✓' : '✗'} ${report.voxels} blocks, ${report.commandsSent} commands${report.skipped ? ` (${report.skipped} unchanged)` : ''}${report.restored ? `, ${report.restored} removed` : ''}${report.errorCount ? `, ${report.errorCount} errors` : ''}${report.verify ? `, verify ${report.verify.remaining ? `${report.verify.remaining} wrong` : 'ok'}` : ''}`);
@@ -586,8 +541,7 @@ async function cmdWatch(flags, out) {
         return;
       }
     }
-  };
-  const rebuild = () => {
+  };  const rebuild = () => {
     if (stopping) return busy;
     if (busy) { again = true; return busy; }
     busy = (async () => {
