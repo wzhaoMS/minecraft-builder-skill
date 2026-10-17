@@ -178,7 +178,7 @@ export async function executeBuild(o) {
   const dim = DIMENSIONS[dimension];
   report.dimension = dimension;
   transport.setDimension?.(dim.id);
-  const placement = resolvePlacement(structure, { at: o.at, anchor: o.anchor, facing: o.facing, rotate: o.rotate, mirror: o.mirror, pose, gap: o.gap });
+  const placement = resolvePlacement(structure, { at: o.at, anchor: o.anchor, facing: o.facing, rotate: o.rotate, mirror: o.mirror, pose, gap: o.gap, side: o.side });
   let world = placement.world;
   const bb = placement.bbox;
   report.origin = placement.origin;

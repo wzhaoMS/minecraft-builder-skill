@@ -31,6 +31,8 @@ RCON, the bot's connection and its operator status, and prints a fix for each pr
 | Wrong rotation / mirrored text | Hand-mirrored letters or wrong `--facing` | Use the `text` generator (readable from its `facing` side); preview the `south` view. |
 | Everything is 1 block too high/low | `--at` y was the block you stand **on** | Use the feet Y (`mcb where` prints it); blueprint `y=0` = first block above ground. |
 | Players see `[BuilderBot: Changed the block…]` spam | That's op command echo (`send_command_feedback`). `mcb` turns it off during builds and restores it (even after a crash, on the next run); pass `--echo` to keep it on. |
+| `Bot disconnected: another session logged in as BuilderBot` | Two mcb commands used the same bot account at once (e.g. `snapshot` while `watch` runs). Run them one after another (watch rejoins on its next rebuild), or give the second its own op'd `--username`. |
+| `snapshot` stops with `NOT_OP` | Reading far-away areas means flying the bot there with `/tp`, which needs op: use the op'd bot account. |
 
 ## Undo / verify / safety
 

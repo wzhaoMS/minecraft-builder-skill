@@ -35,6 +35,10 @@ build → verify → undo loop. Tested end-to-end against Paper 1.21.11 (locally
 - `house style=classic|medieval|rustic|modern` palettes; `facing` for JSON `parts` and
   `Structure.place()` (north-west corner after turning); block renames across versions
   (`chain` ↔ `iron_chain`, `grass` → `short_grass`) translated automatically.
+- Placement around a player: `--near <player> --side west --gap 40`; `preview --facing`,
+  `preview --cut <y>`; per-command help (`mcb build --help`).
+- `watch` sessions: one undo id, resumable after a restart, survive the bot being kicked, NDJSON
+  events with `--json`.
 - The bot reads player positions and gamerules through `/tellraw`, so servers with
   `send_command_feedback=false` work.
 - Unit tests (270, incl. an in-memory server for safety regressions), end-to-end tests against a

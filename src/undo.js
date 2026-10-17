@@ -112,6 +112,8 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
   let build = null, groundBuild = null;
   if (restore.count) build = await run(restore);
   if (ground.count) groundBuild = await run(ground);
+  // the restore runs are not undoable builds of their own; don't confuse readers with their undo status
+  if (build) delete build.undo;
   const hints = [];
   if (conflicts.length) hints.push('Some blocks were changed after the build and were left as they are; re-run with --force to restore them too.');
   if (unreadable) hints.push('Some blocks could not be read (chunks not loaded) and were left as they are; re-run, or pass --force to restore them without checking.');

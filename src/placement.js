@@ -30,14 +30,17 @@ export function turnsForFacing(facing) {
 /**
  * @param {import('./core/structure.js').Structure} structure
  * @param {{ at?: number[], anchor?: 'corner'|'center'|'origin', facing?: string, rotate?: number, mirror?: 'x'|'z'|null,
- *           pose?: {x:number,y:number,z:number,yaw:number}, gap?: number }} opts
+ *           pose?: {x:number,y:number,z:number,yaw:number}, gap?: number, side?: 'north'|'east'|'south'|'west' }} opts
  * @returns {{ world, origin:number[], turns:number, mirror, facing:string, bbox:{min:number[],max:number[],size:number[]} }}
  */
 export function resolvePlacement(structure, opts = {}) {
-  let { at, anchor, facing, rotate, mirror = null, pose, gap = 3 } = opts;
+  let { at, anchor, facing, rotate, mirror = null, pose, gap = 3, side } = opts;
+  if (side != null && !VEC[String(side).toLowerCase()]) throw new Error(`Invalid side "${side}" (north|east|south|west)`);
+  side = side != null ? String(side).toLowerCase() : null;
   let turns;
   if (pose && !at) {
-    const look = yawToDir(pose.yaw);
+    // the build goes on `side` of the player (default: where they look), front facing them
+    const look = side ?? yawToDir(pose.yaw);
     facing = facing ?? OPPOSITE[look];
     turns = turnsForFacing(facing) + toQuarterTurns(rotate ?? 0);
   } else {
@@ -57,8 +60,9 @@ export function resolvePlacement(structure, opts = {}) {
     else if (anchor === 'corner') origin = [ax - b.min[0], ay, az - b.min[2]];
     else throw new Error(`Invalid anchor "${anchor}" (corner|center|origin)`);
   } else if (pose) {
-    // In front of the player, centred on their line of sight, `gap` blocks away, front facing them.
-    const look = yawToDir(pose.yaw);
+    // On `side` of the player (default: in front of them), centred on that line, `gap` blocks
+    // between them and the build's nearest edge, front facing them.
+    const look = side ?? yawToDir(pose.yaw);
     const [vx, vz] = VEC[look];
     const px = Math.floor(pose.x), py = Math.floor(pose.y), pz = Math.floor(pose.z);
     const depthAlong = vx !== 0 ? w : d;

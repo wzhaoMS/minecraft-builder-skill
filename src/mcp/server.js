@@ -28,7 +28,9 @@ const buildProperties = {
   blueprint: blueprintSchema,
   params: { type: 'object' },
   at: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 },
-  near: { type: 'string', description: 'Player name: build in front of them, facing them' },
+  near: { type: 'string', description: 'Player name: build next to them (default: in front of them), front facing them' },
+  side: { type: 'string', enum: ['north', 'east', 'south', 'west'], description: 'With near: which side of the player to build on (default: the way they look)' },
+  gap: { type: 'integer', description: 'With near: blocks between the player and the build (default 3)' },
   facing: { type: 'string', enum: ['north', 'east', 'south', 'west'] },
   anchor: { type: 'string', enum: ['corner', 'center', 'origin'] },
   dimension: { type: 'string', enum: ['overworld', 'the_nether', 'the_end'] },
@@ -72,7 +74,7 @@ export const TOOLS = [
   },
   {
     name: 'mc_build',
-    description: 'Build a blueprint in the running world. Give either at=[x,y,z] (north-west footprint corner, y = feet level) or near=<player>. The blueprint front faces south; facing rotates it. Returns a report with world bounds, verify results and an undo id.',
+    description: 'Build a blueprint in the running world. Give either at=[x,y,z] (north-west footprint corner, y = feet level) or near=<player> (in front of them, or on `side` of them at `gap` blocks; front facing them). The blueprint front faces south; facing rotates it. Returns a report with world bounds, verify results and an undo id.',
     inputSchema: { type: 'object', properties: buildProperties, required: ['blueprint'] },
   },
   {
@@ -179,7 +181,7 @@ export function createServer({ flags = {}, log = () => {} } = {}) {
       }
       const near = a.near ?? (a.at ? undefined : cfg.player ?? undefined);
       const report = await executeBuild({
-        structure: s, transport: tr, at: a.at ?? (a.dryRun && !near ? [0, 0, 0] : undefined), near, facing: a.facing, anchor: a.anchor,
+        structure: s, transport: tr, at: a.at ?? (a.dryRun && !near ? [0, 0, 0] : undefined), near, side: a.side, gap: a.gap, facing: a.facing, anchor: a.anchor,
         clear: !!a.clear, ground: a.ground, verify: a.verify !== false, dryRun: !!a.dryRun, mode: a.mode ?? 'fill',
         dimension: a.dimension, force: !!a.force, planOnly: !!a.planOnly,
         stateDir: stateDir(cfg), version: cfg.version ?? tr.version, log,

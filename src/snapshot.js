@@ -15,6 +15,8 @@ import { splitBox } from './compile/plan.js';
  */
 export async function captureRegion(transport, box, { tile = transport.readTileSize ?? 64, onProgress } = {}) {
   if (!transport.canRead) throw new Error(`The ${transport.kind} transport cannot read blocks (use the bot transport)`);
+  // reading far-away areas means flying the bot there (/tp): that needs operator rights
+  transport.requireOp?.();
   const [x1, y1, z1, x2, y2, z2] = box;
   const s = new Structure({ name: 'snapshot' });
   let unknown = 0;
@@ -23,11 +25,14 @@ export async function captureRegion(transport, box, { tile = transport.readTileS
   for (const t of tiles) {
     await transport.loadArea({ x1: t.x1, z1: t.z1, x2: t.x2, z2: t.z2 }, { topY: y2 });
     await transport.syncWorld?.(); // include changes made by others up to now
+    let waited = false;
     for (let y = t.y1; y <= t.y2; y++) {
       for (let z = t.z1; z <= t.z2; z++) {
         for (let x = t.x1; x <= t.x2; x++) {
           let b = transport.readBlock(x, y, z);
-          if (b === undefined) {
+          if (b === undefined && !waited) {
+            // give missing chunks one chance per tile, then count the rest as unknown
+            waited = true;
             await transport.waitForArea?.({ x1: t.x1, z1: t.z1, x2: t.x2, z2: t.z2 }, 5000);
             b = transport.readBlock(x, y, z);
           }

@@ -142,6 +142,18 @@ export function trackChunks(bot) {
   };
 }
 
+/** The error for a lost connection, with what to do about the usual cause. */
+function disconnectError(reason, username = 'the bot') {
+  const why = String(reason ?? 'unknown');
+  if (/duplicate_login|logged in from another location/i.test(why)) {
+    return new TransportError(`Bot disconnected: another session logged in as ${username}`, {
+      code: 'ENDED',
+      hint: `Only one mcb command can use the ${username} account at a time (e.g. \`snapshot\` while \`watch\` runs kicks the watcher). Run them one after another, or give the second one its own op'd --username.`,
+    });
+  }
+  return new TransportError(`Bot disconnected (${why})`, { code: 'ENDED', hint: 'Re-run the command; if it keeps happening check the server with `mcb doctor`.' });
+}
+
 function kickText(reason) {
   if (typeof reason === 'string') {
     try { return flattenText(JSON.parse(reason)); } catch { return reason; }
@@ -194,7 +206,11 @@ export class BotTransport {
 
   _attach(bot) {
     const onMessage = (msg) => this._onMessage(msg);
-    const onEnd = (reason) => { this.closed = true; this.endReason = reason; this._failAll(new TransportError(`Bot disconnected (${reason})`, { code: 'ENDED' })); };
+    const onEnd = (reason) => {
+      this.closed = true;
+      this.endReason = this.endReason ?? reason; // a kick reason (set just before) is more telling
+      this._failAll(disconnectError(this.endReason, this.cfg.username ?? bot.username));
+    };
     const onKicked = (reason) => { this.endReason = kickText(reason); };
     const onError = () => {};
     // Columns that arrived with real block data. mineflayer also creates EMPTY placeholder columns
@@ -313,7 +329,7 @@ export class BotTransport {
   }
 
   async _send(cmd) {
-    if (this.closed) throw new TransportError(`Bot disconnected (${this.endReason ?? 'unknown'})`, { code: 'ENDED' });
+    if (this.closed) throw disconnectError(this.endReason ?? 'unknown', this.cfg.username ?? this.bot.username);
     const c = cmd.startsWith('/') ? cmd : '/' + cmd;
     if (c.length > 256) throw new TransportError(`Command longer than 256 characters: ${c.slice(0, 60)}…`, { code: 'TOO_LONG' });
     await this._throttle();

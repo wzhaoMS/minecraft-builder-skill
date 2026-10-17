@@ -199,5 +199,14 @@ mcb export my.json -o my.png                     # preview image
 The data pack builds in steps across ticks (so huge builds don't hit the command-chain limit),
 force-loads only the chunks it needs (and only removes forceloads it added), and can be stopped
 with `/function mcb:<name>/cancel`. Copy the generated folder into `saves/<World>/datapacks/`,
-`/reload`, stand where the north-west bottom corner should go, and run `/function mcb:<name>`
-(or pass `--at x,y,z` for fixed coordinates). Data pack format: 1.21.1 – 1.21.11.
+open the world **with cheats on** (or Open to LAN → Allow Cheats), `/reload` (check with
+`/datapack list`), stand where the north-west bottom corner should go, and run
+`/function mcb:<name>` (or export with `--at x,y,z` for fixed coordinates). There is no undo in
+single player — back the world up first. Works with Minecraft 1.21 – 1.21.11 (1.21.5 – 1.21.11
+with `--strict`).
+
+Using a `.schem` in game: put it in `.minecraft/config/worldedit/schematics/` (single-player
+WorldEdit) or `plugins/WorldEdit/schematics/` (server), `//schem load <name>`, stand where the
+north-west bottom corner should go (the file's paste offset is 0,0,0, so it extends east, south
+and up from your feet) and `//paste`. Cells the blueprint leaves untouched are saved as air, so a
+plain `//paste` also clears them; `//paste -a` keeps what is already there. `//undo` reverts it.

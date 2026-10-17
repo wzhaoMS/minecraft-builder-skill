@@ -18,7 +18,7 @@ import { DEFAULT_MC_VERSION } from '../core/blockinfo.js';
 const require = createRequire(import.meta.url);
 const PKG = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
 
-const BOOLEANS = ['json', 'quiet', 'help', 'verify', 'strict', 'dryRun', 'force', 'acceptEula', 'fawe', 'installJava', 'list', 'noAir', 'all', 'yes', 'repair', 'undo', 'lan', 'echo', 'anyServer'];
+const BOOLEANS = ['json', 'quiet', 'help', 'verify', 'strict', 'dryRun', 'force', 'acceptEula', 'fawe', 'installJava', 'list', 'noAir', 'all', 'yes', 'repair', 'undo', 'lan', 'echo', 'anyServer', 'newSession'];
 
 export const HELP = `mcb ${PKG.version} — build anything in Minecraft Java Edition (for AI agents and humans)
 
@@ -62,7 +62,110 @@ CONNECTION FLAGS (precedence: flags > MCB_* env vars > mcb.config.json > default
 
 BLUEPRINTS  .json (palette + ASCII layers / fills / blocks / generator / parts), .js/.mjs modules,
             .schem .schematic .nbt .litematic, or gen:<name>. Front faces SOUTH (+Z); --facing turns it.
+Details for one command: mcb <command> --help
 Docs: SKILL.md, docs/  •  https://github.com/wzhaoMS/minecraft-builder-skill`;
+
+const HELP_FOOTER = 'Connection flags (--host --port --rcon-port --rcon-password --config --transport --username) work on every command.\nAll commands accept --json. General help: mcb --help';
+
+const PLACEMENT_HELP = `WHERE IT GOES (pick one)
+  --at x,y,z            y = the level the player's feet are at (blueprint y=0 = first layer above ground).
+                        x,z = the footprint's north-west corner (--anchor corner, default),
+                        its centre (--anchor center) or blueprint (0,0,0) (--anchor origin).
+                        ~ is relative to --near's player: --at ~5,~,~-3
+  --near <player>       next to a player, front facing them: in front of them by default,
+                        --side north|east|south|west to put it on another side,
+                        --gap <n> blocks between them and the build (default 3)
+  --facing <dir>        turn the build so its front (built facing south) faces dir
+  --rotate 90|180|270   extra clockwise turn; --mirror x|z
+  --dimension overworld|the_nether|the_end   (default: the --near player's, else the overworld)`;
+
+const COMMAND_HELP = {
+  build: `mcb build <blueprint> (--at x,y,z | --near <player>) [options]
+Build a blueprint in the running world: validate → snapshot (undo) → check what it replaces →
+send merged /fill commands → optionally verify. Nothing changes if any check fails.
+
+${PLACEMENT_HELP}
+
+WHAT HAPPENS
+  --verify              read every block back afterwards and repair mismatches once
+  --clear [margin]      empty the area (+margin, default 2) first — trees, terrain, old builds
+  --ground <block>      lay a foundation layer under the footprint
+  --mode fill|layered|hand   fill (fast, default) · layered (one block at a time, --bps) · hand
+                        (the bot places blocks visibly)
+  --strict              exact block states, no neighbour updates
+  --force               allow destroying chests/signs/containers and other refusals
+  --no-undo             skip the undo snapshot (the container check still runs)
+  --echo                keep op command echo on (it is muted during builds by default)
+  --dry-run             print the commands without connecting (needs --at)
+  -p key=value          generator / JS blueprint parameters (repeatable), --params '{json}'
+
+Prints an undo command; --json prints a mcb.build-report/1 object.`,
+  plan: `mcb plan <blueprint> (--at x,y,z | --near <player>) [build options]
+Read-only: where the build would land (world box, facing, dimension), how many existing blocks it
+would replace (by type), whether it would destroy chests/signs, and how many commands it needs.
+Takes the same options as build.
+
+${PLACEMENT_HELP}`,
+  watch: `mcb watch <blueprint file> (--at x,y,z | --near <player>) [build options]
+Build, then rebuild every time the file is saved: only differences are sent and blocks you removed
+from the design are put back to what the world had before. Stop with Ctrl+C (or by ending the
+process). One undo id covers the whole session (printed at the start); restarting watch on the same
+file with the same placement continues that session (--new-session starts over).
+It holds the bot account while running: other bot commands (snapshot, build…) log the same bot in
+and kick it — it rejoins on the next save, but run them one at a time (or with RCON) when you can.
+--json prints one JSON object per line (events: session, rebuild, error, watching, stopped).
+
+${PLACEMENT_HELP}`,
+  undo: `mcb undo [id | snapshot file] [--list] [--force] [--any-server]
+Restore what a build (or a whole watch session) changed. Pass the id the build printed — plain
+\`mcb undo\` takes the newest snapshot in this undo store (.mcb/undo next to the config).
+Blocks edited since the build (or unreadable) are left alone and listed; --force restores them too.
+Grass/paths that decayed under the build are put back. --any-server allows a snapshot taken on
+another server address (same world). --list shows the snapshots in this store.`,
+  preview: `mcb preview <blueprint> [-o out.png] [--view sheet|iso|iso-nw|iso-ne|iso-sw|top|south|north|east|west]
+             [--facing <dir>] [--cut <y>] [--size <max px>] [-p key=value]
+Render a PNG: the sheet has an iso view from the south-east, a top view (north up) and the south
+(front) and east elevations. --facing shows it turned the way build --facing will place it,
+--cut hides everything above y (floor plans, interiors). Unknown blocks are listed.`,
+  snapshot: `mcb snapshot --from x,y,z --to x,y,z -o <file.json|.schem|.nbt|.litematic> [--render out.png]
+             [--dimension overworld|the_nether|the_end] [--no-air]
+Copy a region of the world into a blueprint file (bot transport). Use it to look at what is really
+built (--render) or to duplicate something elsewhere.`,
+  export: `mcb export <blueprint> -o <file.schem|.nbt|.litematic|.json|.mcfunction|.png> [-p key=value]
+mcb export <blueprint> --datapack <world>/datapacks --name <name> [--at x,y,z]
+.schem: WorldEdit — put it in config/worldedit/schematics (single player) or plugins/WorldEdit/schematics,
+  //schem load <name>, stand where the north-west bottom corner goes, //paste (-a keeps existing blocks:
+  cells the blueprint leaves untouched are saved as air).
+Data pack: open the world with cheats on, /reload, stand at the north-west bottom corner (or pass
+  --at for fixed coordinates), /function mcb:<name>; /function mcb:<name>/cancel stops it. No undo.`,
+  info: `mcb info <blueprint> [-p key=value] [--all]
+Size (W×H×D), bounds, block counts (solid and air), an estimate of commands/time, lint results.
+Sizes include extras like eaves and foundations below y=0 — use them to lay out several parts.`,
+  validate: `mcb validate <blueprint> [-p key=value]
+Check every block state against the Minecraft data (with suggestions), complete doors/beds, translate
+renamed blocks, and warn about unsupported torches/plants and floating sand. Exit code 1 on errors.`,
+  generators: `mcb generators [name] [--all]
+List the built-in generators, or one generator's parameters (type, default, range, description).
+Use them as gen:<name> with -p key=value, e.g. mcb preview gen:house -p style=medieval.`,
+  where: `mcb where [player]
+A player's position (block and exact), facing and dimension — or the list of online players.`,
+  doctor: `mcb doctor [connection flags]
+Check Node, dependencies, config, the server (and where its address came from), RCON, the bot's
+login and operator status, with a fix for every problem. Also restores gamerules an interrupted
+build left changed.`,
+  server: `mcb server setup [--dir ../mc-server] [--mc-version <v>] [--port 25565] --accept-eula [--op <you>]
+                 [--fawe] [--install-java] [--world flat|normal] [--lan]
+mcb server start|stop|status|logs [--dir <server dir>]
+mcb server op <name>
+A local Paper server for building. setup writes mcb.config.json so later commands need no flags.`,
+  cmd: `mcb cmd "<command>" ["<command>" …]
+Run raw server commands (no leading slash) and print their output.`,
+  mcp: `mcb mcp
+Run as an MCP server on stdio (tools mc_preview, mc_plan, mc_build, mc_undo, mc_snapshot, …).
+See docs/mcp.md for client configuration.`,
+  generate: `mcb generate <generator> [-p key=value]… -o <file>
+Run a generator and save the result as a blueprint/structure file.`,
+};
 
 class Output {
   constructor(flags) {
@@ -74,6 +177,8 @@ class Output {
   log(msg) { if (!this.quiet) process.stderr.write(`${msg}\n`); }
   print(msg) { if (!this.json) process.stdout.write(`${msg}\n`); }
   result(obj) { if (this.json) process.stdout.write(JSON.stringify(obj, null, 2) + '\n'); }
+  /** One compact JSON object per line (long-running commands like watch: NDJSON on stdout). */
+  event(obj) { if (this.json) process.stdout.write(JSON.stringify(obj) + '\n'); }
   progress(p) {
     if (this.quiet) return;
     const now = Date.now();
@@ -142,9 +247,9 @@ async function cmdInfo(flags, out) {
   out.result(res);
   out.print(`${s.name}: ${res.size.join('×')} (W×H×D), ${s.count} blocks (${s.count - air} solid${air ? ` + ${air} air that clears space` : ''}), ${res.palette} block types`);
   if (b) out.print(`bounds ${fmtBox(b)}   plan: ≈${plan.commands} commands (${plan.fills} fill, ${plan.setblocks} setblock; exact count depends on where it lands), ~${res.estimatedSeconds}s to build`);
-  const top = Object.entries(counts).slice(0, 12);
+  const top = Object.entries(counts).slice(0, flags.all ? undefined : 12);
   for (const [blk, n] of top) out.print(`  ${String(n).padStart(7)}  ${blk}`);
-  if (Object.keys(counts).length > top.length) out.print(`  … ${Object.keys(counts).length - top.length} more`);
+  if (Object.keys(counts).length > top.length) out.print(`  … ${Object.keys(counts).length - top.length} more (--all lists them)`);
   printLint(lint, out);
   return lint.ok ? 0 : 1;
 }
@@ -173,8 +278,15 @@ function airCount(s) {
 }
 
 async function cmdPreview(flags, out) {
-  const s = await loadWithParams(flags._[1], flags);
+  let s = await loadWithParams(flags._[1], flags);
   const lint = lintStructure(s, { version: flags.version || DEFAULT_MC_VERSION });
+  if (flags.facing && flags.facing !== true) {
+    // show it the way `build --facing` will place it (views stay north-up / from the south-east)
+    const { turnsForFacing } = await import('../placement.js');
+    const name = s.name;
+    s = s.transformed({ rotate: turnsForFacing(flags.facing) * 90 });
+    s.name = `${name} (facing ${flags.facing})`;
+  }
   const { renderPreview } = await import('../render/preview.js');
   const view = flags.view ?? 'sheet';
   const file = flags.out && flags.out !== true ? flags.out : `${(s.name || 'preview').replace(/[^\w.-]+/g, '_')}${view === 'sheet' ? '' : '-' + view}.png`;
@@ -235,6 +347,7 @@ function buildOptsFromFlags(flags, cfg) {
   return {
     at: undefined,
     near: flags.near && flags.near !== true ? flags.near : undefined,
+    side: flags.side && flags.side !== true ? flags.side : undefined,
     facing: flags.facing,
     rotate: flags.rotate,
     mirror: flags.mirror,
@@ -282,7 +395,7 @@ async function cmdBuild(flags, out, { planOnly = false } = {}) {
       structure: s, transport, ...o, version: cfg.version ?? transport.version,
       log: (m) => out.log(m), onProgress: (p) => out.progress(p),
     });
-    if (report.undo?.available) report.undo.command = `mcb undo ${report.undo.id}${configFlag(flags)}`;
+    if (report.undo?.available) report.undo.command = `${selfCommand()} undo ${report.undo.id}${configFlag(flags)}`;
     if (o.dryRun && !flags.json) {
       for (const c of report.commands) out.print(c);
       out.log(`dry run: ${report.plan.commands} commands for ${report.voxels} blocks`);
@@ -299,7 +412,7 @@ async function cmdBuild(flags, out, { planOnly = false } = {}) {
 }
 
 function printPlan(r, out) {
-  out.print(`plan for "${r.name}" in the ${r.dimension}: ${r.size.join('×')} at ${r.box.slice(0, 3).join(',')} → ${r.box.slice(3).join(',')} (front faces ${r.facing})`);
+  out.print(`plan for "${r.name}" in the ${r.dimension}: ${r.size.join('×')} at ${r.box.slice(0, 3).join(',')} → ${r.box.slice(3).join(',')} (${facingNote(r)})`);
   out.print(`  ${r.voxels} blocks → ${r.plan.commands} commands; ${r.commandsToSend ?? r.plan.commands} needed now${r.skipped ? ` (${r.skipped} already in place)` : ''}, ~${r.estimatedSeconds ?? '?'}s`);
   if (r.impact) {
     const top = Object.entries(r.impact.replaced).slice(0, 6).map(([b, n]) => `${n} ${b}`).join(', ');
@@ -310,6 +423,11 @@ function printPlan(r, out) {
   }
   for (const w of r.lint?.warnings ?? []) out.print(`  ⚠ ${w.message} (${w.count}×)`);
   for (const w of r.warnings ?? []) out.print(`  ⚠ ${w}`);
+}
+
+/** "turned so its front faces east" / "not turned: its south side is the front" */
+function facingNote(r) {
+  return r.facing && r.facing !== 'south' ? `turned so its front faces ${r.facing}` : 'not turned: its south side is the front';
 }
 
 async function poseOf(transport, player) {
@@ -325,7 +443,7 @@ async function poseOf(transport, player) {
 
 function printReport(r, out) {
   const secs = (r.durationMs / 1000).toFixed(1);
-  out.print(`${r.ok ? '✓' : '✗'} ${r.name}: ${r.voxels} blocks at ${r.box.slice(0, 3).join(',')} → ${r.box.slice(3).join(',')} (front faces ${r.facing})`);
+  out.print(`${r.ok ? '✓' : '✗'} ${r.name}: ${r.voxels} blocks at ${r.box.slice(0, 3).join(',')} → ${r.box.slice(3).join(',')} (${facingNote(r)})`);
   out.print(`  ${r.commandsSent ?? r.plan.commands}/${r.plan.commands} commands sent (${r.skipped ? `${r.skipped} skipped as already built, ` : ''}${r.noops ?? 0} no-ops) in ${secs}s${r.blocksPerSecond ? `, ${r.blocksPerSecond} blocks/s` : ''}`);
   if (r.hand) out.print(`  hand mode: ${r.hand.placedByHand} placed by hand, ${r.hand.setblock} via /setblock, ${r.hand.corrected} state fixes`);
   for (const f of r.lint?.fixes ?? []) out.print(`  ✓ auto-fix: ${f.message} (${f.count}×)`);
@@ -351,30 +469,59 @@ async function cmdWatch(flags, out) {
   if (!flags.at && !o.near && cfg.player) o.near = cfg.player;
   if (!flags.at && !o.near) throw Object.assign(new Error('Where should it go? Pass --at x,y,z or --near <player>'), { exitCode: 2 });
   if (o.mode === 'hand') o.mode = 'fill';
+  const fileAbs = path.resolve(file);
+  // the same file + the same placement request continues the previous session (its blocks are
+  // updated in place and one undo id covers everything), unless --new-session
+  const request = JSON.stringify({ at: flags.at ?? null, near: o.near ?? null, side: o.side ?? null, facing: o.facing ?? null, anchor: o.anchor ?? null, rotate: o.rotate ?? null, mirror: o.mirror ?? null, dimension: o.dimension ?? null, gap: o.gap ?? null });
   const transport = await openTransport(cfg, { log: (m) => out.log(m) });
   const { Structure } = await import('../core/structure.js');
-  const { saveSnapshot, newSnapshotId } = await import('../snapshot.js');
+  const { saveSnapshot, newSnapshotId, decodeSnapshot } = await import('../snapshot.js');
   if (flags.at) {
     const pose = String(flags.at).includes('~') ? await poseOf(transport, o.near ?? cfg.player) : null;
     o.at = parseCoords(flags.at, pose && [pose.x, pose.y, pose.z], '--at');
     if (pose?.dimension && !o.dimension) o.dimension = pose.dimension;
   }
   let placement = null; // where the session builds: fixed by the first build that reached the world
-  const placed = new Structure(); // every position any version of the design has occupied
-  const baseline = new Structure(); // the world as it was before the first build touched each block
+  let placed = new Structure(); // every position any version of the design has occupied
+  let baseline = new Structure(); // the world as it was before the first build touched each block
   // every state the session has placed (or was about to place) at each position, newest last:
   // after an interrupted rebuild the world may hold any of them, and undo must recognise them all
   const owned = new Map();
   const MAX_STATES = 16;
   let unionBox = null, undoId = null, undoNoted = false;
   let busy = null, again = false, stopping = false, n = 0;
+  const undoCommand = () => `${selfCommand()} undo ${undoId}${configFlag(flags)}`;
+
+  if (o.undo && o.stateDir && !flags.newSession) {
+    for (const snap of listSnapshots(o.stateDir).filter((sn) => /-watch-/.test(sn.id))) {
+      let data;
+      try { data = decodeSnapshot(fs.readFileSync(snap.file)); } catch { continue; }
+      if (data.meta?.file !== fileAbs || data.meta?.request !== request || !data.meta?.placement) continue;
+      if (data.meta.server && transport.serverKey && data.meta.server !== transport.serverKey) continue;
+      undoId = data.id ?? snap.id;
+      baseline = data.structure;
+      unionBox = data.box;
+      placement = data.meta.placement;
+      const layers = [data.after, ...(data.afterAlt ?? [])].filter(Boolean);
+      for (let i = layers.length - 1; i >= 0; i--) {
+        layers[i].forEach((x, y, z, b) => {
+          const k = `${x},${y},${z}`;
+          owned.set(k, [...(owned.get(k) ?? []), b]);
+          if (!placed.has(x, y, z)) placed.set(x, y, z, b);
+        });
+      }
+      out.log(`continuing watch session ${undoId} from ${new Date(snap.mtime).toLocaleString()} (same file and place; --new-session starts over)`);
+      break;
+    }
+  }
+
   const saveUndo = (report) => {
     // one snapshot for the whole session, rewritten (atomically) before every rebuild changes
     // anything: `mcb undo <id>` reverts all of it, even after a crash half-way through a rebuild
     if (!o.undo || !o.stateDir || !report.changed) return;
     report.changed.forEach((x, y, z, b) => {
       const k = `${x},${y},${z}`;
-      const list = (owned.get(k) ?? []).filter((s) => s !== b);
+      const list = (owned.get(k) ?? []).filter((st) => st !== b);
       list.push(b);
       if (list.length > MAX_STATES) list.shift();
       owned.set(k, list);
@@ -392,9 +539,16 @@ async function cmdWatch(flags, out) {
     undoId ??= newSnapshotId(`watch-${report.name}`);
     saveSnapshot(o.stateDir, {
       id: undoId, name: report.name, box: unionBox, structure: baseline, after, afterAlt,
-      meta: { origin: report.origin, facing: report.facing, dimension: report.dimension, server: transport.serverKey ?? null, watch: true, groundLayer: !!report.snapshotBox },
+      meta: {
+        origin: report.origin, facing: report.facing, dimension: report.dimension, server: transport.serverKey ?? null,
+        watch: true, groundLayer: !!report.snapshotBox, file: fileAbs, request, placement,
+      },
     }, { overwrite: true });
-    if (!undoNoted) { out.print(`undo everything this session built with: mcb undo ${undoId}${configFlag(flags)}`); undoNoted = true; }
+    if (!undoNoted) {
+      out.print(`undo everything this session built with: ${undoCommand()}`);
+      out.event({ schema: 'mcb.watch-event/1', event: 'session', undo: { id: undoId, command: undoCommand() } });
+      undoNoted = true;
+    }
   };
   const beforeChanges = (report) => {
     if (report.snapshot) report.snapshot.forEach((x, y, z, b) => { if (!baseline.has(x, y, z)) baseline.set(x, y, z, b); });
@@ -404,20 +558,33 @@ async function cmdWatch(flags, out) {
   };
   const once = async () => {
     n++;
-    try {
-      const s = await loadWithParams(file, flags);
-      const opts = placement
-        ? { ...o, at: placement.origin, anchor: 'origin', facing: placement.facing, near: undefined, rotate: undefined, clear: false, dimension: placement.dimension }
-        : o;
-      const report = await executeBuild({
-        structure: s, transport, ...opts, previousWorld: placement ? placed : undefined, baseline: placement?.cleared ? null : baseline,
-        saveUndo: false, beforeChanges, handleSignals: false,
-        version: cfg.version ?? transport.version, log: (m) => out.log(m), onProgress: (p) => out.progress(p),
-      });
-      out.print(`[${new Date().toLocaleTimeString()}] #${n} ${report.ok ? '✓' : '✗'} ${report.voxels} blocks, ${report.commandsSent} commands${report.skipped ? ` (${report.skipped} unchanged)` : ''}${report.restored ? `, ${report.restored} removed` : ''}${report.errorCount ? `, ${report.errorCount} errors` : ''}`);
-      for (const e of report.errors ?? []) out.print(`  ✗ ${e.count}× ${e.message}`);
-    } catch (e) {
-      out.print(`✗ ${e.message}${e.hint ? `\n  hint: ${e.hint}` : ''}`);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // another command logging in as the same bot kicks this one: rejoin instead of giving up
+        if (transport.closed && transport.reconnect) { out.log('bot was disconnected — reconnecting…'); await transport.reconnect(); }
+        const s = await loadWithParams(file, flags);
+        const opts = placement
+          ? { ...o, at: placement.origin, anchor: 'origin', facing: placement.facing, near: undefined, rotate: undefined, clear: false, dimension: placement.dimension }
+          : o;
+        const report = await executeBuild({
+          structure: s, transport, ...opts, previousWorld: placement ? placed : undefined, baseline: placement?.cleared ? null : baseline,
+          saveUndo: false, beforeChanges, handleSignals: false,
+          version: cfg.version ?? transport.version, log: (m) => out.log(m), onProgress: (p) => out.progress(p),
+        });
+        out.print(`[${new Date().toLocaleTimeString()}] #${n} ${report.ok ? '✓' : '✗'} ${report.voxels} blocks, ${report.commandsSent} commands${report.skipped ? ` (${report.skipped} unchanged)` : ''}${report.restored ? `, ${report.restored} removed` : ''}${report.errorCount ? `, ${report.errorCount} errors` : ''}${report.verify ? `, verify ${report.verify.remaining ? `${report.verify.remaining} wrong` : 'ok'}` : ''}`);
+        for (const e of report.errors ?? []) out.print(`  ✗ ${e.count}× ${e.message}`);
+        out.event({
+          schema: 'mcb.watch-event/1', event: 'rebuild', n, ok: report.ok, voxels: report.voxels, commandsSent: report.commandsSent,
+          skipped: report.skipped ?? 0, removed: report.restored ?? 0, box: report.box, errors: report.errors, verify: report.verify ?? null,
+          undo: undoId ? { id: undoId, command: undoCommand() } : null,
+        });
+        return;
+      } catch (e) {
+        if (e.code === 'ENDED' && attempt === 0 && transport.reconnect) continue;
+        out.print(`✗ ${e.message}${e.hint ? `\n  hint: ${e.hint}` : ''}`);
+        out.event({ schema: 'mcb.watch-event/1', event: 'error', n, code: e.code ?? null, message: e.message, hint: e.hint ?? null });
+        return;
+      }
     }
   };
   const rebuild = () => {
@@ -448,8 +615,9 @@ async function cmdWatch(flags, out) {
   let timer = null;
   let watcher = null;
   if (!stopping) {
-    out.print(`watching ${path.resolve(file)} — save it to rebuild (Ctrl+C to stop)`);
-    watcher = fs.watch(path.resolve(file), () => {
+    out.print(`watching ${fileAbs} — save it to rebuild (Ctrl+C to stop)`);
+    out.event({ schema: 'mcb.watch-event/1', event: 'watching', file: fileAbs, undo: undoId ? { id: undoId, command: undoCommand() } : null });
+    watcher = fs.watch(fileAbs, () => {
       clearTimeout(timer);
       timer = setTimeout(rebuild, 300);
     });
@@ -458,10 +626,10 @@ async function cmdWatch(flags, out) {
   clearTimeout(timer);
   watcher?.close();
   if (busy) await busy;
+  out.event({ schema: 'mcb.watch-event/1', event: 'stopped', undo: undoId ? { id: undoId, command: undoCommand() } : null });
   await transport.close();
   return 0;
 }
-
 async function cmdUndo(flags, out) {
   const cfg = resolveConfig(flags);
   const dir = stateDir(cfg);
@@ -494,7 +662,7 @@ async function cmdUndo(flags, out) {
     }
     if (r.unreadable) out.print(`  ⚠ ${r.unreadable} block(s) could not be read and were left alone — run the undo again (or --force)`);
     for (const e of r.build?.errors ?? []) out.print(`  ✗ ${e.count}× ${e.message}`);
-    if (!r.ok) out.print(`  the snapshot was kept: re-run \`mcb undo ${snap.id}${configFlag(flags)}\` to retry`);
+    if (!r.ok) out.print(`  the snapshot was kept: re-run \`${selfCommand()} undo ${snap.id}${configFlag(flags)}\` to retry`);
     return r.ok ? 0 : 3;
   } finally {
     await transport.close();
@@ -507,6 +675,15 @@ function configFlag(flags) {
   if (!f) return '';
   const p = path.resolve(String(f));
   return ` --config ${/\s/.test(p) ? `"${p}"` : p}`;
+}
+
+/** How to run this CLI again from the current directory (`node bin/mcb.js`), for printed follow-up commands. */
+function selfCommand() {
+  const script = process.argv[1] ? path.resolve(process.argv[1]) : null;
+  if (!script) return 'mcb';
+  const rel = path.relative(process.cwd(), script);
+  const shown = rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : script;
+  return `node ${/\s/.test(shown) ? `"${shown}"` : shown}`;
 }
 
 async function cmdPlan(flags, out) {
@@ -762,8 +939,9 @@ export async function main(argv) {
   }
   const out = new Output(flags);
   const cmd = flags._[0];
+  const topic = cmd === 'help' ? flags._[1] : cmd;
   if (!cmd || flags.help || cmd === 'help') {
-    process.stdout.write(HELP + '\n');
+    process.stdout.write((topic && COMMAND_HELP[topic] ? `${COMMAND_HELP[topic].trim()}\n\n${HELP_FOOTER}` : HELP) + '\n');
     return cmd || flags.help ? 0 : 2;
   }
   if (cmd === 'version' || cmd === '--version') {

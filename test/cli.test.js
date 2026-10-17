@@ -103,6 +103,11 @@ test('CLI: help, unknown command, info --json, validate errors, dry-run build', 
   const h = mcb(['--help']);
   assert.equal(h.status, 0);
   assert.match(h.stdout, /USAGE/);
+  const bh = mcb(['build', '--help']);
+  assert.equal(bh.status, 0);
+  assert.match(bh.stdout, /--anchor corner/);
+  assert.match(bh.stdout, /--side north\|east\|south\|west/);
+  assert.match(mcb(['help', 'watch']).stdout, /One undo id covers the whole session/);
   assert.equal(mcb(['frobnicate']).status, 2);
   const info = mcb(['info', 'examples/blueprints/cottage.json', '--json']);
   assert.equal(info.status, 0, info.stderr);

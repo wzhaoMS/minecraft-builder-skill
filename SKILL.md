@@ -29,7 +29,7 @@ Pick the situation that matches the user:
 |---|---|
 | No server yet (most common) | `node bin/mcb.js server setup --accept-eula --op <TheirMinecraftName>` then `node bin/mcb.js server start`. Tell the user to join **Multiplayer → `localhost`** with Minecraft Java **1.21.11** (or the version printed). Only pass `--accept-eula` after telling the user they are agreeing to the [Minecraft EULA](https://aka.ms/MinecraftEULA). Add `--install-java` if `doctor` says Java 21 is missing. |
 | They already run a server | Point `mcb` at it — the same flags work on every command: `node bin/mcb.js doctor --host <host> --port <port> --rcon-port <rcon port> --rcon-password <pw>`. RCON (`enable-rcon=true` in `server.properties`) is fastest; without it `mcb` joins as an op'd bot (`op BuilderBot` in the server console; offline-mode servers only — online-mode servers need `--auth microsoft` with a real account). Once `doctor` is all ✓, save the settings in `mcb.config.json` (below) so later commands need no flags. |
-| Single-player world only, no server | `node bin/mcb.js export <blueprint> --datapack "<.minecraft>/saves/<World>/datapacks" --name <name>`, then in game `/reload` and `/function mcb:<name>` while standing where the build's north-west corner should go. |
+| Single-player world only, no server | `node bin/mcb.js export <blueprint> --datapack "<.minecraft>/saves/<World>/datapacks" --name <name>`, then open the world **with cheats on**, `/reload` and `/function mcb:<name>` while standing where the build's north-west corner should go (`/function mcb:<name>/cancel` stops it; there is no undo — back the world up). For WorldEdit users: `export … -o <name>.schem` (see `node bin/mcb.js export --help`). |
 
 `server setup` writes `mcb.config.json` (host, port, RCON password, server dir) so later commands
 need no flags. You can also create it by hand:
@@ -39,8 +39,9 @@ need no flags. You can also create it by hand:
   "rconPort": 25575, "rconPassword": "…", "player": "Steve" }
 ```
 
-`transport`: `bot` (default; can read blocks → verify/undo/snapshot, visible "BuilderBot" player),
-`rcon` (server console; fastest, no op needed, no verify), `auto` (bot, falls back to RCON).
+`transport`: `auto` (default: the bot, falling back to RCON if it can't join), `bot` (can read
+blocks → verify/undo/snapshot, visible "BuilderBot" player), `rcon` (server console; fastest, no
+op needed, no verify/undo).
 
 Where settings come from (first match wins): command-line flags → `MCB_*` environment variables
 (`MCB_HOST`, `MCB_PORT`, `MCB_RCON_PORT`, `MCB_RCON_PASSWORD`, `MCB_USERNAME`, `MCB_PLAYER`,
@@ -68,9 +69,11 @@ file** (or in the current directory without one) — run `undo` with the same co
 4. **Plan, then build** — `node bin/mcb.js plan x.json --near <player>` is read-only: where it will
    land, how many existing blocks it replaces (by type), whether it would destroy chests/signs.
    Then `node bin/mcb.js build x.json --near <player> --verify` (or `--at x,y,z --facing south`).
-   Add `--clear` to empty the area first (trees, terrain), `--ground grass_block` for a foundation
-   layer, `--mode hand` to watch the bot place blocks one by one. `--dry-run` prints the commands
-   without connecting (so it needs `--at`, not `--near`).
+   `--near` puts it in front of the player, front facing them; `--side west --gap 40` puts it 40
+   blocks to their west instead (still facing them). Add `--clear` to empty the area first (trees,
+   terrain), `--ground grass_block` for a foundation layer, `--mode hand` to watch the bot place
+   blocks one by one. `--dry-run` prints the commands without connecting (so it needs `--at`, not
+   `--near`). `node bin/mcb.js build --help` lists every option.
 5. **Look at the real result** — `--verify` compares the world with your blueprint; to see what is
    actually there (water flow, terrain around it, things players added) capture it:
    `node bin/mcb.js snapshot --from <box min> --to <box max> -o live.json --render live.png`
@@ -99,6 +102,15 @@ an interrupted build can simply be re-run.
 undo id, so "remove that one house" is `undo <its id>` and leaves everything else standing. Lay the
 parts out so they don't overlap; where a later part does overwrite an earlier one, undoing it puts
 the earlier blocks back. For one-shot designs a single blueprint with `parts` is simpler.
+
+**Iterating live with the user** (`watch`): `node bin/mcb.js watch x.json --at x,y,z [build
+options]` builds once, then rebuilds every time the file is saved — only differences are sent and
+blocks you remove from the design go back to what was there before. Start it in the background
+(it runs until Ctrl+C or until you end the process); edit and save the file to iterate. It prints
+one undo id for the whole session at the start (`--json`: one JSON event per line), and restarting
+it on the same file and `--at` continues that session. While it runs it holds the bot account:
+another bot command (`snapshot`, `build`) logs the same bot in and kicks it — it rejoins on the next
+save, but prefer to run other commands after stopping it.
 
 ## 3. Coordinates and orientation — get these right
 
@@ -173,7 +185,7 @@ Full spec: [docs/blueprint-format.md](docs/blueprint-format.md).
 | `fountain` / `arch` / `wall` | plazas, gates, walls | `radius=4`; `width=9 height=8`; `width=10 height=5 crenellations` |
 | `lighthouse` `windmill` `obelisk` `lamppost` `bench` | landmarks, street furniture | see `mcb generators <name>` |
 | `text` | signs, logos, labels | `text=HELLO block=gold_block font=5x7\|3x5 scale=1 facing=south plane=vertical\|flat background` |
-| `pixelart` | images → blocks | `image=<png/jpg> width=64 palette=concrete\|wool\|terracotta\|concrete+wool\|full dither plane` |
+| `pixelart` | images → blocks | `image=<png/jpg> width=64 palette=concrete\|wool\|terracotta\|concrete+wool\|full dither plane` — use `dither=false` for logos/screenshots with flat colours (dithering speckles them) |
 | `sphere` `dome` `cylinder` `cone` `pyramid` `box` | primitives | `radius`, `height`, `material`, `hollow` |
 
 Generators are deterministic (`-p seed=N` changes the random details — the same seed gives the

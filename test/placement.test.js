@@ -57,6 +57,18 @@ test('near a player: placed in front of them with the front facing back at them'
   assert.equal(e.bbox.min[0] - 0 - 1, 2);
 });
 
+test('near a player on another side: --side west --gap 40 puts it 40 blocks west, facing them', () => {
+  // player at (520, -60, 560) looking north, build wanted 40 blocks to the west
+  const p = resolvePlacement(house(), { pose: { x: 520.5, y: -60, z: 560.5, yaw: 180 }, side: 'west', gap: 40 });
+  assert.equal(p.facing, 'east', 'front faces the player');
+  assert.equal(520 - p.bbox.max[0] - 1, 40, '40 blocks between them');
+  assert.ok(p.bbox.min[2] <= 560 && p.bbox.max[2] >= 560, 'centred on the player along z');
+  let door = null;
+  p.world.forEach((x, y, z, b) => { if (b.startsWith('oak_door')) door = b; });
+  assert.match(door, /facing=east/);
+  assert.throws(() => resolvePlacement(house(), { pose: { x: 0, y: 0, z: 0, yaw: 0 }, side: 'up' }), /Invalid side/);
+});
+
 test('placement errors are helpful', () => {
   assert.throws(() => resolvePlacement(house(), {}), /--at x,y,z or --near/);
   assert.throws(() => resolvePlacement(new Structure(), { at: [0, 0, 0] }), /empty/);

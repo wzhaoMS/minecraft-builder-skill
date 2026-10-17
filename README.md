@@ -75,8 +75,8 @@ design guidance and troubleshooting. Then just ask: *"build me a medieval castle
 | `mcb validate <blueprint>` | Check every block state against Minecraft data; suggest fixes for typos |
 | `mcb preview <blueprint> -o x.png` | Render iso / top / elevation views to a PNG (`--view`, `--cut <y>` for floor plans and interiors) |
 | `mcb plan <blueprint> --at x,y,z \| --near <player>` | Read-only: where it lands, what it replaces (incl. chests/signs), commands needed |
-| `mcb build <blueprint> --at x,y,z \| --near <player>` | Build it (`--facing`, `--rotate`, `--mirror`, `--clear`, `--ground`, `--verify`, `--strict`, `--mode fill\|layered\|hand`, `--dimension`, `--dry-run`) |
-| `mcb watch <blueprint> --at …` | Rebuild live every time you save the file (only differences are sent; removed parts are restored) |
+| `mcb build <blueprint> --at x,y,z \| --near <player>` | Build it (`--facing`, `--side`/`--gap` around a player, `--rotate`, `--mirror`, `--clear`, `--ground`, `--verify`, `--strict`, `--mode fill\|layered\|hand`, `--dimension`, `--dry-run`); `mcb build --help` for all options |
+| `mcb watch <blueprint> --at …` | Rebuild live every time you save the file (only differences are sent; removed parts are restored); one undo id per session, resumable, NDJSON events with `--json` |
 | `mcb undo [id\|file] [--list] [--force] [--any-server]` | Restore what a build changed; blocks edited since (or unreadable) are left alone and listed |
 | `mcb snapshot --from … --to … -o x.json` | Copy a region of the world into a blueprint (`--render` for a PNG) |
 | `mcb export <blueprint> -o x.schem\|x.nbt\|x.json\|x.mcfunction` | Convert; `--datapack <dir>` makes a data pack for single-player |
