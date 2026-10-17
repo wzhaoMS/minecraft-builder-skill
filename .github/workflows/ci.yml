@@ -72,6 +72,7 @@ jobs:
       - name: End-to-end tests
         env:
           MCB_E2E: '1'
+          MCB_SERVER_DIR: ${{ runner.temp }}/mc-server
         run: npm run test:e2e
       - name: Build examples on the server
         run: |

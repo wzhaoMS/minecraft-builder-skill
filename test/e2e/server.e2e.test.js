@@ -282,3 +282,32 @@ test('a bot that logs in somewhere else (the Nether) still reads the overworld b
     await ensureBot();
   }
 });
+test('an exported data pack builds the blueprint exactly when run on the server', { skip: !enabled || !cfg.rconPassword || !cfg.serverDir }, async () => {
+  const { writeDatapack } = await import('../../src/io/datapack.js');
+  const { resolvePlacement } = await import('../../src/placement.js');
+  const { lintStructure } = await import('../../src/core/lint.js');
+  const props = fs.readFileSync(path.join(cfg.serverDir, 'server.properties'), 'utf8');
+  const level = /^level-name=(.*)$/m.exec(props)?.[1]?.trim() || 'world';
+  const packs = path.join(cfg.serverDir, level, 'datapacks');
+  const s = await tower();
+  lintStructure(s); // as mcb export does: door halves etc.
+  await writeDatapack(s, { outDir: packs, name: 'e2e_tower', mode: 'relative' });
+  await rcon.command('reload', { allowErrors: true });
+  await new Promise((r) => setTimeout(r, 3000));
+  await rcon.loadArea({ x1: 1250, z1: 1000, x2: 1260, z2: 1010 });
+  await rcon.command(`fill 1250 ${Y} 1000 1260 ${Y + 12} 1010 air`);
+  const out = await rcon.query(`execute positioned 1252 ${Y} 1002 run function mcb:e2e_tower`);
+  assert.doesNotMatch(out.text, /Unknown function/i, out.text);
+  // the pack forceloads its area and builds over the next ticks: wait for the first block
+  for (let i = 0; i < 40; i++) {
+    if (/passed/i.test((await rcon.query(`execute if block 1252 ${Y} 1002 stone_bricks`)).text)) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  await new Promise((r) => setTimeout(r, 1500));
+  await ensureBot();
+  const world = resolvePlacement(s, { at: [1252, Y, 1002], anchor: 'corner' }).world;
+  const v = await verifyAndRepair(bot, world, { repair: false });
+  assert.equal(v.mismatches, 0, JSON.stringify(v.examples));
+  assert.equal(v.unreadable, 0);
+  fs.rmSync(path.join(packs, 'e2e_tower'), { recursive: true, force: true });
+});
