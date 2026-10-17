@@ -578,7 +578,7 @@ export function renderPreview(structure, opts = {}) {
     cv = r ? r.canvas : emptyImage();
     if (r) compass(cv, view);
   } else if (view === 'sheet') {
-    cv = renderSheet(structure, { maxSize, title: opts.title ?? structure.name, custom, cutY, grid });
+    cv = renderSheet(structure, { maxSize, title: opts.title ?? structure.name, custom, cutY, grid, front: opts.front ?? 'south' });
   } else {
     throw new Error(`Unknown view "${opts.view}" (sheet|iso|iso-ne|iso-nw|iso-sw|top|south|north|east|west)`);
   }
@@ -592,26 +592,33 @@ function compass(cv, view) {
   if (t) cv.text(t, cv.w - 4, 2, [60, 60, 120], 1, { align: 'right' });
 }
 
-function renderSheet(structure, { maxSize, title, custom = null, cutY = Infinity, grid = true }) {
+function renderSheet(structure, { maxSize, title, custom = null, cutY = Infinity, grid = true, front = 'south' }) {
   const full = collect(structure);
   if (!full) return emptyImage();
   const cut = Number.isFinite(cutY);
   const c = cut ? collect(structure, cutY) : full;
   if (!c) return emptyImage(`NOTHING AT Y<=${cutY}`);
+  front = SIDE_OF[front] ? front : 'south';
+  // show the front, the side to its right (as seen standing in front of it) and an iso view from that corner
+  const side = SIDE_OF[front];
+  const isoView = ISO_FOR_FRONT[front];
+  const isoLabel = `ISO VIEW FROM ${ISO_CORNER_NAME[isoView]}`;
   const header = 30;
   const totalW = Math.min(maxSize, 1600);
   const isoMax = Math.round(totalW * 0.64);
-  const iso = renderIso(structure, { maxW: isoMax, maxH: isoMax, bg: custom ?? BG_ISO, cutY, grid, c });
-  // TOP / SOUTH / EAST share one scale (pixels per block) sized to fill the right-hand column
+  const iso = renderIso(structure, { maxW: isoMax, maxH: isoMax, bg: custom ?? BG_ISO, cutY, grid, c: ISO_ROT[isoView] ? null : c, turns: ISO_ROT[isoView] });
+  // a tall, narrow build makes a narrow iso panel: keep it at least as wide as its caption
+  const isoW = Math.max(iso.canvas.w, textBitmap(isoLabel, { font: '5x7', proportional: true }).width + 16);
+  // TOP / front / side share one scale (pixels per block) sized to fill the right-hand column
   const [W0, H0, D0] = c.size;
   const { ml, mt, mr, mb } = ORTHO_MARGINS;
-  const colW = Math.max(160, totalW - iso.canvas.w - 12);
+  const colW = Math.max(160, totalW - isoW - 12);
   const colH = Math.max(iso.canvas.h + 10, 480);
   const cell = Math.max(1, Math.min(24, Math.floor(Math.min(
     (colH - 3 * (mt + mb + 16)) / (D0 + 2 * H0),
     (colW - ml - mr) / Math.max(W0, D0),
   ))));
-  const views = [['top', 'TOP (NORTH UP)'], ['south', 'SOUTH ELEVATION (FRONT)'], ['east', 'EAST ELEVATION']];
+  const views = [['top', 'TOP (NORTH UP)'], [front, `${front.toUpperCase()} ELEVATION (FRONT)`], [side, `${side.toUpperCase()} ELEVATION`]];
   const panels = views.map(([v, cap]) => {
     const r = renderOrtho(structure, v, { scale: cell, bg: custom ?? BG_PANEL, cutY, grid, plotTint: !custom, c });
     if (v === 'top') compass(r.canvas, 'top');
@@ -619,20 +626,20 @@ function renderSheet(structure, { maxSize, title, custom = null, cutY = Infinity
   });
   const rightW = Math.max(...panels.map((p) => p.r.canvas.w), 200);
   const rightH = panels.reduce((h, p) => h + p.r.canvas.h + 16, 0);
-  const W = iso.canvas.w + 8 + rightW + 4;
+  const W = isoW + 8 + rightW + 4;
   const H = header + Math.max(iso.canvas.h + 14, rightH + 4);
   const cv = new Canvas(Math.max(W, 520), H, custom ?? [250, 250, 252]);
   // header (size and block count describe the whole structure, even with a cutaway)
   cv.rect(0, 0, cv.w, header, [40, 46, 58]);
   const [sx, sy, sz] = full.size;
   cv.text(`${title ?? 'structure'}`, 10, 8, [255, 255, 255], 2);
-  const info = `${sx}×${sy}×${sz} (W×H×D)  ${full.n} BLOCKS  FRONT = SOUTH${cut ? `  CUT ABOVE Y=${cutY}` : ''}`;
+  const info = `${sx}×${sy}×${sz} (W×H×D)  ${full.n} BLOCKS  FRONT = ${front.toUpperCase()}${cut ? `  CUT ABOVE Y=${cutY}` : ''}`;
   cv.text(info, cv.w - 10, 11, cut ? [255, 205, 120] : [200, 210, 225], 1, { align: 'right' });
   // iso
-  cv.text('ISO VIEW FROM SOUTH-EAST', 8, header + 4, [70, 70, 90]);
-  cv.paste(iso.canvas, 0, header + 14);
+  cv.text(isoLabel, 8, header + 4, [70, 70, 90]);
+  cv.paste(iso.canvas, Math.floor((isoW - iso.canvas.w) / 2), header + 14);
   // right column
-  const rx = iso.canvas.w + 8;
+  const rx = isoW + 8;
   let y = header + 4;
   for (const { r, cap } of panels) {
     cv.text(cap, rx + 2, y, [70, 70, 90]);
@@ -641,5 +648,10 @@ function renderSheet(structure, { maxSize, title, custom = null, cutY = Infinity
   }
   return cv;
 }
+
+/** The elevation to the right of the front (seen standing in front of it), and the iso corner showing both. */
+const SIDE_OF = { south: 'east', east: 'north', north: 'west', west: 'south' };
+const ISO_FOR_FRONT = { south: 'iso', east: 'iso-ne', north: 'iso-nw', west: 'iso-sw' };
+const ISO_CORNER_NAME = { iso: 'SOUTH-EAST', 'iso-ne': 'NORTH-EAST', 'iso-nw': 'NORTH-WEST', 'iso-sw': 'SOUTH-WEST' };
 
 export { Canvas };

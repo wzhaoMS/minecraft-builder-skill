@@ -280,18 +280,20 @@ function airCount(s) {
 async function cmdPreview(flags, out) {
   let s = await loadWithParams(flags._[1], flags);
   const lint = lintStructure(s, { version: flags.version || DEFAULT_MC_VERSION });
+  let front = 'south';
   if (flags.facing && flags.facing !== true) {
-    // show it the way `build --facing` will place it (views stay north-up / from the south-east)
+    // show it the way `build --facing` will place it; the sheet then shows that front and side
     const { turnsForFacing } = await import('../placement.js');
     const name = s.name;
     s = s.transformed({ rotate: turnsForFacing(flags.facing) * 90 });
     s.name = `${name} (facing ${flags.facing})`;
+    front = String(flags.facing).toLowerCase();
   }
   const { renderPreview } = await import('../render/preview.js');
   const view = flags.view ?? 'sheet';
   const file = flags.out && flags.out !== true ? flags.out : `${(s.name || 'preview').replace(/[^\w.-]+/g, '_')}${view === 'sheet' ? '' : '-' + view}.png`;
   const r = renderPreview(s, {
-    view, maxSize: flags.size ? Number(flags.size) : undefined, title: s.name,
+    view, maxSize: flags.size ? Number(flags.size) : undefined, title: s.name, front,
     cutaway: flags.cut !== undefined && flags.cut !== true ? { y: Number(flags.cut) } : undefined,
   });
   fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });

@@ -237,3 +237,14 @@ test('scale: a ~1M-voxel 400×150×400 city and a sparse 3000-block-wide layout 
   for (const view of ['iso', 'iso-sw', 'top']) assert.ok(renderPreview(sparse, { view }).width <= 1600, view);
   assert.ok(performance.now() - t0 < 15000, 'sparse renders');
 });
+
+test('sheet follows the front and keeps captions readable for tall, narrow builds', () => {
+  const tower = new Structure().fill(0, 0, 0, 2, 120, 2, 'stone_bricks');
+  const narrow = renderPreview(tower, { view: 'sheet', maxSize: 600 });
+  assert.ok(narrow.width <= 600 && narrow.width >= 400, `sheet width ${narrow.width}`);
+  const house = new Structure().fill(0, 0, 0, 6, 3, 4, 'oak_planks').set(3, 1, 4, 'oak_door[facing=south,half=lower]');
+  for (const front of ['south', 'east', 'north', 'west', 'bogus']) {
+    const r = renderPreview(house, { view: 'sheet', front });
+    assert.ok(r.width > 0 && decodePng(r.png).width === r.width, front);
+  }
+});
