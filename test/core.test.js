@@ -96,6 +96,45 @@ test('Structure.transformed rotates coordinates and states together', () => {
   assert.deepEqual(n.bounds().min, [0, 0, 0]);
 });
 
+const ORIENTED = [
+  'oak_stairs[facing=north,half=top,shape=inner_left]', 'oak_stairs[facing=east,half=bottom,shape=outer_right]',
+  'oak_log[axis=x]', 'oak_log[axis=z]', 'oak_sign[rotation=3]', 'white_banner[rotation=13]',
+  'oak_fence[east=true,north=false,south=true,west=false]', 'redstone_wire[east=side,north=up,south=none,west=side]',
+  'cobblestone_wall[east=low,north=tall,south=none,up=true,west=low]', 'rail[shape=south_east]', 'rail[shape=ascending_west]',
+  'powered_rail[shape=north_south]', 'oak_door[facing=west,half=lower,hinge=left]', 'chest[facing=north,type=left]',
+  'red_bed[facing=south,part=head]', 'wall_torch[facing=east]', 'jigsaw[orientation=up_north]', 'hopper[facing=down]',
+  'glow_lichen[down=false,east=true,north=false,south=false,up=true,west=false]', 'lever[face=wall,facing=south]',
+];
+
+test('state transforms: four quarter turns and double mirrors are identities; 180° = mirror x ∘ mirror z', () => {
+  for (const b of ORIENTED) {
+    const c = canonical(b);
+    let r = c;
+    for (let i = 0; i < 4; i++) r = transformBlock(r, { rotate: 90 });
+    assert.equal(r, c, `4×90° ${b}`);
+    assert.equal(transformBlock(transformBlock(c, { mirror: 'x' }), { mirror: 'x' }), c, `mirror x twice ${b}`);
+    assert.equal(transformBlock(transformBlock(c, { mirror: 'z' }), { mirror: 'z' }), c, `mirror z twice ${b}`);
+    assert.equal(transformBlock(c, { rotate: 180 }), transformBlock(transformBlock(c, { mirror: 'x' }), { mirror: 'z' }), `180 = mx∘mz ${b}`);
+    assert.equal(transformBlock(transformBlock(c, { rotate: 90 }), { rotate: 270 }), c, `90 then 270 ${b}`);
+  }
+});
+
+test('asymmetric structure: rotate 4×90° returns the original, mirror changes handedness', () => {
+  const s = new Structure()
+    .fill(0, 0, 0, 6, 0, 2, 'stone') // non-square footprint
+    .set(-3, 1, 5, 'oak_stairs[facing=east]')
+    .set(6, 1, 2, 'oak_door[facing=south,half=lower,hinge=left]')
+    .set(2, 2, -4, 'rail[shape=north_east]');
+  let r = s;
+  for (let i = 0; i < 4; i++) r = r.transformed({ rotate: 90 });
+  const dump = (x) => { const a = []; x.forEach((px, py, pz, b) => a.push(`${px},${py},${pz}=${b}`)); return a.sort(); };
+  assert.deepEqual(dump(r), dump(s));
+  const m = s.transformed({ mirror: 'x' });
+  assert.equal(m.get(-6, 1, 2), 'oak_door[facing=south,half=lower,hinge=right]');
+  assert.equal(m.get(3, 1, 5), 'oak_stairs[facing=west]');
+  assert.equal(m.get(-2, 2, -4), 'rail[shape=north_west]');
+});
+
 test('replace / mapBlocks / paste / compact', () => {
   const s = new Structure().fill(0, 0, 0, 1, 0, 1, 'oak_planks').set(0, 1, 0, 'oak_stairs[facing=east]');
   s.mapBlocks((b) => b.replace(/^oak_/, 'spruce_'));

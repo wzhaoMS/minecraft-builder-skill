@@ -30,7 +30,13 @@ import { canonical } from '../core/blockstate.js';
 
 let generatorsMod = null;
 async function gens() {
-  if (!generatorsMod) generatorsMod = await import('../generators/index.js');
+  if (!generatorsMod) {
+    // index.js registers every built-in generator into the registry
+    await import('../generators/index.js').catch((e) => {
+      if (e.code !== 'ERR_MODULE_NOT_FOUND' || !String(e.message).includes('generators')) throw e;
+    });
+    generatorsMod = await import('../generators/registry.js');
+  }
   return generatorsMod;
 }
 

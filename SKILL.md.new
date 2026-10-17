@@ -53,16 +53,24 @@ need no flags. You can also create it by hand:
    floating sand…) then `node bin/mcb.js preview x.json -o x.png` and **look at the PNG** (iso view
    from the south-east, top view with north up, south (front) and east elevations). Fix and repeat
    until it looks right. `node bin/mcb.js info x.json` shows size, block counts and command estimate.
-4. **Build** — `node bin/mcb.js build x.json --near <player> --verify`
-   (or `--at x,y,z --facing south`). Add `--clear` to empty the area first (trees, terrain),
-   `--ground grass_block` for a foundation layer, `--mode hand` to watch the bot place blocks one
-   by one, `--dry-run` to print the commands without building.
+4. **Plan, then build** — `node bin/mcb.js plan x.json --near <player>` is read-only: where it will
+   land, how many existing blocks it replaces (by type), whether it would destroy chests/signs.
+   Then `node bin/mcb.js build x.json --near <player> --verify` (or `--at x,y,z --facing south`).
+   Add `--clear` to empty the area first (trees, terrain), `--ground grass_block` for a foundation
+   layer, `--mode hand` to watch the bot place blocks one by one, `--dry-run` to print the commands.
 5. **Report** to the user: where it is, its size, verify result. If they don't like it:
-   `node bin/mcb.js undo` restores the area exactly as it was.
+   `node bin/mcb.js undo` restores what the build changed (blocks someone edited since are left
+   alone and listed; `--force` restores those too).
 
-Build reports (`--json`) include `ok`, `box` (world bounds), `facing`, `plan.commands`,
-`errors[]` (with hints), `verify.{checked,mismatches,repaired,remaining}` and `undo.id`.
+Build reports (`--json`, schema `mcb.build-report/1`) include `ok`, `status`
+(`complete`/`partial`), `box` (world bounds), `facing`, `impact` (replaced blocks), `plan.commands`,
+`errors[]` (with hints), `verify.{matched,mismatches,repaired,remaining,unreadable}` and `undo.id`.
 Re-running a build is safe and cheap: blocks that are already correct are skipped.
+
+Safety rails you can rely on (and should not bypass casually): nothing changes until the blueprint
+is valid and the undo snapshot is complete; builds refuse to overwrite chests, barrels, signs and
+other blocks whose contents undo can't restore (`CONTAINERS_AT_RISK` → move the build or `--force`);
+an interrupted build can simply be re-run.
 
 ## 3. Coordinates and orientation — get these right
 
@@ -85,8 +93,8 @@ Re-running a build is safe and cheap: blocks that are already correct are skippe
 Handled automatically (don't work around them): door/tall-plant upper halves and bed heads are
 added; leaves are made persistent; torches, doors, plants, rails, carpets, signs are placed after
 the blocks they hang on, fluids last; `/fill` volume limits; chunk loading; rate limits; the
-1.21.11 gamerule renames; op command echo spam (`log_admin_commands` is muted during builds and
-restored).
+1.21.11 gamerule renames; the dimension of the `--near` player; op command echo
+(`send_command_feedback` is muted during builds and restored, even after a crash).
 
 ## 4. Blueprint quick reference
 
@@ -150,14 +158,19 @@ Read [docs/building-guide.md](docs/building-guide.md) before designing anything 
 | `Unknown block "x"` | Fix the name — the error lists suggestions; `validate` checks the whole blueprint. |
 | Build landed in the wrong place/orientation | `undo`, then re-check `--at` (NW corner, feet-level Y) and `--facing`; preview the top view. |
 | Some blocks missing after build | Run with `--verify` (auto-repairs); check warnings about unsupported torches/floating sand. |
+| `CONTAINERS_AT_RISK` | The area holds chests/signs/etc. Move the build, empty them, or (only if the user agrees) `--force`. |
+| `SNAPSHOT_TOO_LARGE` / `SNAPSHOT_INCOMPLETE` | Split the build into parts, retry, or `--no-undo` (then there is no undo). |
 | Huge build is slow | Prefer `transport: rcon`; `info` estimates time; split into parts; keep `--mode fill`. |
 
 More: [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## 8. Etiquette with real worlds
 
-* Say where you are about to build and how big it is before building near a player; avoid
-  building on top of them (`--near` leaves a gap).
-* `--clear` deletes everything in the area (except below ground). Big clears and big builds are
-  undoable, but ask first in worlds you didn't create.
-* Keep the undo id from the report; `node bin/mcb.js undo --list` shows all snapshots.
+* Run `plan` first and tell the user where you are about to build, how big it is and what it
+  replaces; avoid building on top of them (`--near` leaves a gap).
+* `--clear` deletes everything in the area (except below ground). Builds are undoable, but ask
+  before clearing or `--force`-ing in worlds you didn't create.
+* Keep the undo id from the report; `node bin/mcb.js undo --list` shows all snapshots. Undo restores
+  block states only (not entities, dropped items or container contents).
+* JS blueprints are code — only run modules you or the user wrote/trust. For random designs,
+  `export` once to `.json` and preview/build that file so both see the same blocks.

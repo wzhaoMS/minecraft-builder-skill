@@ -30,17 +30,24 @@ RCON, the bot's connection and its operator status, and prints a fix for each pr
 | Fences / panes not connecting | Built with `--strict` (no block updates) | Build without `--strict`, or specify `north=true,…` in the block state. |
 | Wrong rotation / mirrored text | Hand-mirrored letters or wrong `--facing` | Use the `text` generator (readable from its `facing` side); preview the `south` view. |
 | Everything is 1 block too high/low | `--at` y was the block you stand **on** | Use the feet Y (`mcb where` prints it); blueprint `y=0` = first block above ground. |
-| Players see `[BuilderBot: Changed the block…]` spam | `log_admin_commands` was on | `mcb` turns it off during builds and restores it; if a build was killed: `mcb cmd "gamerule log_admin_commands true"`. |
+| Players see `[BuilderBot: Changed the block…]` spam | That's op command echo (`send_command_feedback`). `mcb` turns it off during builds and restores it (even after a crash, on the next run); pass `--echo` to keep it on. |
 
-## Undo / verify
+## Undo / verify / safety
 
-* `mcb undo` restores the most recent snapshot (`mcb undo --list`, `mcb undo <id>`). Snapshots
-  live in `.mcb/undo/` next to `mcb.config.json` (or the current directory).
-* Undo needs the **bot** transport (RCON can't read blocks). Builds made over RCON have no snapshot
-  unless the bot is used.
-* Snapshots store block states only — chest contents and sign text inside the area are not saved.
-* `--verify` compares every block (ignoring properties the game recomputes, like fence connections)
-  and repairs mismatches with `/setblock`. Remaining mismatches are listed in the report.
+* `mcb undo` restores what the most recent build changed (`mcb undo --list`, `mcb undo <id>`).
+  Blocks that were edited after the build are **left alone and listed** (`--force` restores them
+  too). Snapshots live in `.mcb/undo/` next to `mcb.config.json` (or the current directory).
+* Undo needs the **bot** transport (RCON can't read blocks); RCON builds report
+  `undo.available: false`. With RCON, `mcb undo --force` restores without checking for later edits.
+* Snapshots store block states only — entities, dropped items and container contents are not
+  saved. That's why builds refuse to overwrite chests, barrels, signs, lecterns, shulker boxes…
+  (`CONTAINERS_AT_RISK`) unless you pass `--force`.
+* Nothing is changed when the snapshot can't be taken completely (`SNAPSHOT_TOO_LARGE`,
+  `SNAPSHOT_INCOMPLETE`); split the build or use `--no-undo` deliberately.
+* `--verify` compares every block (ignoring properties the game recomputes, like fence connections
+  or leaf distance) and repairs mismatches with one `/setblock` pass. The report separates
+  `matched`, `mismatches`, `remaining` and `unreadable` (chunk not available — never counted as OK).
+* `mcb plan` shows the impact (blocks replaced by type, containers at risk) without changing anything.
 
 ## Local server
 
