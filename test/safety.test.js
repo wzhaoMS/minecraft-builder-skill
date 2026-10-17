@@ -299,6 +299,32 @@ test('watch session: originals are taken when the session first changes a block 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('watch session: a player edit under an earlier block is an original too, not a stale ground backup', async () => {
+  const { WatchSession } = await import('../src/watch.js');
+  const dir = tmp();
+  const sim = new SimTransport();
+  const session = new WatchSession();
+  const run = (s) => executeBuild({
+    structure: s, transport: sim, ...session.buildOptions({ at: [0, 0, 0], stateDir: dir }), saveUndo: false, ...quiet,
+    beforeChanges: (rep) => { if (session.record(rep)) saveSnapshot(dir, session.snapshot({ id: 'g', name: 'g' }), { overwrite: true }); },
+  });
+  await run(new Structure().set(0, 1, 0, 'stone')); // (0,0,0) below it is remembered as "ground" (air)
+  sim.world.set('0,0,0', 'gold_block'); // then a player puts gold there
+  await run(new Structure().set(0, 1, 0, 'stone').set(0, 0, 0, 'stone'));
+  await run(new Structure().set(0, 1, 0, 'stone')); // the design drops (0,0,0) again
+  assert.equal(sim.get(0, 0, 0), 'gold_block');
+  await run(new Structure().set(0, 1, 0, 'stone').set(0, 0, 0, 'stone'));
+  const u = await undoBuild(sim, path.join(dir, 'undo', 'g.json.gz'), { stateDir: dir, ...quiet });
+  assert.equal(u.ok, true, JSON.stringify(u));
+  assert.equal(sim.get(0, 0, 0), 'gold_block');
+  assert.equal(sim.get(0, 1, 0), 'air');
+  // and a restarted session reads the same split back from its snapshot
+  const { decodeSnapshot } = await import('../src/snapshot.js');
+  const again = WatchSession.fromSnapshot(decodeSnapshot(fs.readFileSync(path.join(dir, 'undo', 'g.json.gz'))));
+  assert.equal(again.baseline.get(0, 0, 0), 'gold_block');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('snapshot ids are unique and never overwrite each other', () => {
   const ids = new Set(Array.from({ length: 200 }, () => newSnapshotId('same name')));
   assert.equal(ids.size, 200);

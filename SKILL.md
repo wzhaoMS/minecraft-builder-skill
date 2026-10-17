@@ -62,8 +62,9 @@ file** (or in the current directory without one) — run `undo` with the same co
 3. **Check** — `node bin/mcb.js validate x.json` (block typos with suggestions, unsupported torches,
    floating sand…) then `node bin/mcb.js preview x.json -o x.png` and **look at the PNG** (iso view
    from the south-east, top view with north up, south (front) and east elevations; `--view iso-nw`
-   shows the back, `--view north|west|top` single views, `--cut <y>` hides everything above y to
-   show floor plans and interiors, `--size` caps the longest side in px).
+   shows the back, `--view north|west|top` single views, `--facing east` shows it turned the way
+   `build --facing east` will place it, `--cut <y>` hides everything above y to show floor plans
+   and interiors, `--size` caps the longest side in px).
    Fix and repeat until it looks right. `node bin/mcb.js info x.json` shows size, bounds, block
    counts and a command estimate.
 4. **Plan, then build** — `node bin/mcb.js plan x.json --near <player>` is read-only: where it will

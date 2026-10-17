@@ -10,7 +10,10 @@ export class WatchSession {
     this.maxStates = maxStates;
     this.placement = null; // { origin, facing, dimension, cleared } — fixed by the first build that reached the world
     this.placed = new Structure(); // every position the session has changed at least once
-    this.baseline = new Structure(); // original block at each position the session changed (+ the ground under it)
+    this.baseline = new Structure(); // original block at each position the session changed
+    // the cell under each changed position as first seen — only to repair grass decay on undo; kept
+    // apart from the originals so a later edit there by a player is never "restored" away
+    this.ground = new Structure();
     this.owned = new Map(); // "x,y,z" → states the session placed or was about to place, newest last
     this.unionBox = null;
   }
@@ -18,7 +21,6 @@ export class WatchSession {
   /** Continue a session from its saved snapshot (decodeSnapshot output). */
   static fromSnapshot(data, opts) {
     const s = new WatchSession(opts);
-    s.baseline = data.structure;
     s.unionBox = data.box;
     s.placement = data.meta?.placement ?? null;
     const layers = [data.after, ...(data.afterAlt ?? [])].filter(Boolean);
@@ -29,6 +31,8 @@ export class WatchSession {
         if (!s.placed.has(x, y, z)) s.placed.set(x, y, z, b);
       });
     }
+    // the saved "before" holds originals at changed positions and ground backups elsewhere
+    data.structure.forEach((x, y, z, b) => (s.owned.has(`${x},${y},${z}`) ? s.baseline : s.ground).set(x, y, z, b));
     return s;
   }
 
@@ -51,10 +55,13 @@ export class WatchSession {
   record(report, { clear = false } = {}) {
     if (report.snapshot && report.changed) {
       report.changed.forEach((x, y, z) => {
-        for (const yy of [y, y - 1]) { // the block, and the ground under it (decay repair on undo)
-          if (this.baseline.has(x, yy, z)) continue;
-          const v = report.snapshot.get(x, yy, z);
-          if (v != null) this.baseline.set(x, yy, z, v);
+        if (!this.baseline.has(x, y, z)) {
+          const v = report.snapshot.get(x, y, z);
+          if (v != null) this.baseline.set(x, y, z, v);
+        }
+        if (!this.ground.has(x, y - 1, z)) {
+          const g = report.snapshot.get(x, y - 1, z);
+          if (g != null) this.ground.set(x, y - 1, z, g);
         }
       });
     }
@@ -89,6 +96,9 @@ export class WatchSession {
       after.set(x, y, z, list[list.length - 1]);
       for (let i = list.length - 2, layer = 0; i >= 0; i--, layer++) (afterAlt[layer] ??= new Structure()).set(x, y, z, list[i]);
     }
-    return { id, name, box: this.unionBox, structure: this.baseline, after, afterAlt, meta: { ...meta, watch: true, placement: this.placement } };
+    // "before": originals at changed positions; ground backups only where nothing was changed
+    const before = this.baseline.clone();
+    this.ground.forEach((x, y, z, b) => { if (!before.has(x, y, z) && !this.owned.has(`${x},${y},${z}`)) before.set(x, y, z, b); });
+    return { id, name, box: this.unionBox, structure: before, after, afterAlt, meta: { ...meta, watch: true, placement: this.placement } };
   }
 }
