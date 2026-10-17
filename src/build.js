@@ -274,7 +274,13 @@ export async function executeBuild(o) {
       if (volume > maxSnap) {
         if (wantUndo) {
           throw new BuildError(`Area too large to snapshot for undo (${volume} blocks > ${maxSnap}) — nothing was changed`, {
-            code: 'SNAPSHOT_TOO_LARGE', hint: 'Split the build into parts, or pass --no-undo to build without an undo snapshot (and without the container check).',
+            code: 'SNAPSHOT_TOO_LARGE', hint: 'Split the build into parts, or pass --no-undo --force to build without an undo snapshot and without the container check.',
+          });
+        }
+        if (!o.force && !o.planOnly) {
+          // without a scan nothing protects chests/signs in the area: that needs an explicit opt-in
+          throw new BuildError(`Area too large to check for chests/signs (${volume} blocks > ${maxSnap}) — nothing was changed`, {
+            code: 'SCAN_TOO_LARGE', hint: 'Split the build into parts, or pass --force to build without the container check.',
           });
         }
         report.warnings.push(`Area too large to scan (${volume} blocks): no undo snapshot and no container check`);
@@ -388,6 +394,9 @@ export async function executeBuild(o) {
       report.estimatedSeconds = Math.max(1, Math.round(ops.length / (transport.kind === 'rcon' ? 60 : 200)));
       return;
     }
+    // last read-only moment: callers that keep their own undo record (watch) persist it now, so a
+    // build that dies half-way can still be undone
+    if (o.beforeChanges) await o.beforeChanges(report);
 
     // 5. execute, grouped by phase + tile
     totalBlocks = ops.reduce((n, op) => n + op.volume, 0);
@@ -458,7 +467,7 @@ export async function executeBuild(o) {
       report.warnings.push(`Verification needs a bot connection (the ${transport.kind} transport cannot read blocks)`);
     }
     await transport.releaseAreas?.();
-  }, { journalDir: o.stateDir });
+  }, { journalDir: o.stateDir, handleSignals: o.handleSignals !== false });
 
   if (o.planOnly) {
     report.durationMs = Date.now() - t0;

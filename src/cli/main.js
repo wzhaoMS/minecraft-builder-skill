@@ -359,13 +359,15 @@ async function cmdWatch(flags, out) {
     o.at = parseCoords(flags.at, pose && [pose.x, pose.y, pose.z], '--at');
     if (pose?.dimension && !o.dimension) o.dimension = pose.dimension;
   }
-  let prev = null;
+  let placement = null; // where the session builds: fixed by the first build that reached the world
+  const placed = new Structure(); // every position any version of the design has occupied
   const baseline = new Structure(); // the world as it was before the first build touched each block
   const changedSoFar = new Structure(); // latest state this session set at every block it changed
   let unionBox = null, undoId = null, undoNoted = false;
   let busy = null, again = false, stopping = false, n = 0;
   const saveUndo = (report) => {
-    // one snapshot for the whole session, rewritten after every rebuild: `mcb undo <id>` reverts all of it
+    // one snapshot for the whole session, rewritten (atomically) before every rebuild changes
+    // anything: `mcb undo <id>` reverts all of it, even after a crash half-way through a rebuild
     if (!o.undo || !o.stateDir || !report.changed) return;
     report.changed.forEach((x, y, z, b) => changedSoFar.set(x, y, z, b));
     if (!changedSoFar.count) return;
@@ -378,20 +380,24 @@ async function cmdWatch(flags, out) {
     }, { overwrite: true });
     if (!undoNoted) { out.print(`undo everything this session built with: mcb undo ${undoId}${configFlag(flags)}`); undoNoted = true; }
   };
+  const beforeChanges = (report) => {
+    if (report.snapshot) report.snapshot.forEach((x, y, z, b) => { if (!baseline.has(x, y, z)) baseline.set(x, y, z, b); });
+    placement ??= { origin: report.origin, facing: report.facing, dimension: report.dimension, cleared: !!o.clear };
+    report.world.forEach((x, y, z, b) => placed.set(x, y, z, b));
+    saveUndo(report);
+  };
   const once = async () => {
     n++;
     try {
       const s = await loadWithParams(file, flags);
-      const opts = prev
-        ? { ...o, at: prev.origin, anchor: 'origin', facing: prev.facing, near: undefined, rotate: undefined, clear: false, dimension: prev.dimension }
+      const opts = placement
+        ? { ...o, at: placement.origin, anchor: 'origin', facing: placement.facing, near: undefined, rotate: undefined, clear: false, dimension: placement.dimension }
         : o;
       const report = await executeBuild({
-        structure: s, transport, ...opts, previousWorld: prev?.world, baseline: prev?.cleared ? null : baseline, saveUndo: false,
+        structure: s, transport, ...opts, previousWorld: placement ? placed : undefined, baseline: placement?.cleared ? null : baseline,
+        saveUndo: false, beforeChanges, handleSignals: false,
         version: cfg.version ?? transport.version, log: (m) => out.log(m), onProgress: (p) => out.progress(p),
       });
-      if (report.snapshot) report.snapshot.forEach((x, y, z, b) => { if (!baseline.has(x, y, z)) baseline.set(x, y, z, b); });
-      saveUndo(report);
-      prev = { world: report.world, origin: report.origin, facing: report.facing, dimension: report.dimension, cleared: prev?.cleared || !!o.clear };
       out.print(`[${new Date().toLocaleTimeString()}] #${n} ${report.ok ? '✓' : '✗'} ${report.voxels} blocks, ${report.commandsSent} commands${report.skipped ? ` (${report.skipped} unchanged)` : ''}${report.restored ? `, ${report.restored} removed` : ''}${report.errorCount ? `, ${report.errorCount} errors` : ''}`);
       for (const e of report.errors ?? []) out.print(`  ✗ ${e.count}× ${e.message}`);
     } catch (e) {
@@ -424,7 +430,11 @@ async function cmdWatch(flags, out) {
   stopping = true;
   clearTimeout(timer);
   watcher.close();
-  if (busy) { out.log('waiting for the current rebuild to finish…'); await busy; }
+  if (busy) {
+    out.log('waiting for the current rebuild to finish… (Ctrl+C again to quit now)');
+    process.once('SIGINT', () => process.exit(130));
+    await busy;
+  }
   await transport.close();
   return 0;
 }

@@ -25,8 +25,9 @@ function fakeBot({ unloadedOnce = new Set(), log = [] } = {}) {
     for (const m of queue.splice(0)) bot.emit('message', m);
   };
   const reply = (m) => { queue.push(m); if (!scheduled) { scheduled = true; setImmediate(flush); } };
-  bot.chat = (c) => {
-    log.push(c);
+  bot.chat = (raw) => {
+    log.push(raw);
+    const c = raw.replace(/^\/execute in \S+ run /, '/'); // gamerules are addressed to a world
     const sync = /^\/tellraw @s "(mcb:sync:[a-z0-9]+:\d+)"$/.exec(c);
     if (sync) return reply(chatMsg({ text: sync[1] }, sync[1]));
     if (c.includes('BAD')) return reply(chatMsg({ color: 'red', extra: [{ translate: 'argument.block.id.invalid', with: ['minecraft:BAD'] }, { click_event: { action: 'suggest_command', command: c } }], text: '' }, 'Unknown block type'));
@@ -101,13 +102,13 @@ test('BotTransport.command collects feedback; query parses text', async () => {
   assert.deepEqual(g, { name: 'log_admin_commands', value: 'true' });
 });
 
-test('withGamerules sets and restores values', async () => {
+test('withGamerules sets and restores values (in an explicitly named world)', async () => {
   const log = [];
   const t = new BotTransport(fakeBot({ log }), { log: () => {}, opLevel: { value: 4 }, maxRate: 100000 });
   await withGamerules(t, { logAdminCommands: false }, async () => {
-    assert.ok(log.includes('/gamerule log_admin_commands false'));
+    assert.ok(log.includes('/execute in minecraft:overworld run gamerule log_admin_commands false'), log.join('\n'));
   });
-  assert.equal(log.filter((c) => c.startsWith('/gamerule log_admin_commands ')).pop(), '/gamerule log_admin_commands true');
+  assert.equal(log.filter((c) => /gamerule log_admin_commands \w+$/.test(c)).pop(), '/execute in minecraft:overworld run gamerule log_admin_commands true');
 });
 
 test('rate limiter caps commands per second', async () => {

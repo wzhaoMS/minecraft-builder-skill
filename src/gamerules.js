@@ -65,9 +65,20 @@ function journalPath(journalDir, transport) {
   return path.join(journalDir, key ? `gamerules-pending-${key}.json` : JOURNAL);
 }
 
-/** Paper keeps gamerules per world: address the world being built in, not the console's overworld. */
-function inDimension(transport, cmd, dim = transport.dimension) {
-  return dim && dim !== 'minecraft:overworld' ? `execute in ${dim} run ${cmd}` : cmd;
+/**
+ * The world gamerule commands address: the build's dimension, else where the bot currently is, else
+ * the overworld (the console's world).
+ */
+function worldOf(transport) {
+  return transport.dimension ?? transport.currentDimension ?? 'minecraft:overworld';
+}
+
+/**
+ * Paper keeps gamerules per world, and a bot runs commands in the world it stands in — so always
+ * name the world explicitly (also the overworld), for queries, changes and journal restores alike.
+ */
+function inDimension(transport, cmd, dim = null) {
+  return `execute in ${dim ?? worldOf(transport)} run ${cmd}`;
 }
 
 function readJournal(file) {
@@ -117,10 +128,10 @@ export async function recoverGamerules(transport, journalDir) {
  * Ctrl+C, or — through the journal in `journalDir` — a crash).
  * @param {Record<string, string|boolean|number>} settings e.g. { sendCommandFeedback: false }
  */
-export async function withGamerules(transport, settings, fn, { journalDir = null } = {}) {
+export async function withGamerules(transport, settings, fn, { journalDir = null, handleSignals = true } = {}) {
   const restore = [];
   const journal = journalDir ? journalPath(journalDir, transport) : null;
-  const dim = transport.dimension ?? null;
+  const dim = worldOf(transport);
   if (transport.kind !== 'dry-run') {
     if (journal) await recoverGamerules(transport, journalDir);
     for (const [key, value] of Object.entries(settings)) {
@@ -157,8 +168,10 @@ export async function withGamerules(transport, settings, fn, { journalDir = null
     if (journal && fs.existsSync(journal) && !failed.length) await recoverGamerules(transport, journalDir).catch(() => {});
     if (failed.length) transport.log?.(`warning: could not restore gamerule(s) ${failed.map(([n, v]) => `${n}=${v}`).join(', ')} — they will be retried on the next run`);
   };
+  // Ctrl+C during a plain build: restore and exit. Callers that manage shutdown themselves (watch)
+  // pass handleSignals: false and let the work finish, which restores the rules in `finally`.
   const onSignal = () => { restoreAll().finally(() => process.exit(130)); };
-  if (restore.length) { process.once('SIGINT', onSignal); process.once('SIGTERM', onSignal); }
+  if (restore.length && handleSignals) { process.once('SIGINT', onSignal); process.once('SIGTERM', onSignal); }
   try {
     return await fn();
   } finally {

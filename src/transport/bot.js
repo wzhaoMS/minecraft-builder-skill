@@ -196,6 +196,12 @@ export class BotTransport {
 
   get version() { return this.bot.version; }
   get username() { return this.bot.username; }
+  /** The world the bot is standing in right now, e.g. "minecraft:the_nether" (null if unknown). */
+  get currentDimension() {
+    const d = this.bot.game?.dimension;
+    if (!d) return null;
+    return String(d).includes(':') ? String(d) : `minecraft:${d}`;
+  }
 
   async _init() {
     // The server sends the player's permission level (entity_status 24..28) right after login.

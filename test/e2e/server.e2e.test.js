@@ -248,3 +248,17 @@ test('CLI: mcb build --json prints a machine-readable report', { skip: !enabled 
   assert.equal(report.verify.remaining, 0);
   assert.deepEqual(report.size, [11, 11, 9]);
 });
+
+test('nether builds mute and restore command feedback in the nether itself, and undo there', { skip: !enabled || !cfg.rconPassword }, async () => {
+  const feedback = async (dim) => /currently set to: (\w+)/.exec((await rcon.query(`execute in ${dim} run gamerule send_command_feedback`)).text)?.[1];
+  const before = { nether: await feedback('minecraft:the_nether'), overworld: await feedback('minecraft:overworld') };
+  const s = await tower();
+  const r = await executeBuild({ structure: s, transport: bot, at: [96, 100, 96], dimension: 'the_nether', clear: 1, verify: true, stateDir: state, force: true });
+  assert.equal(r.dimension, 'the_nether');
+  assert.equal(r.verify.remaining, 0, JSON.stringify(r.verify.examples));
+  assert.deepEqual({ nether: await feedback('minecraft:the_nether'), overworld: await feedback('minecraft:overworld') }, before);
+  const u = await undoBuild(bot, r.undo.file, { stateDir: state });
+  assert.equal(u.ok, true, JSON.stringify(u));
+  assert.deepEqual({ nether: await feedback('minecraft:the_nether'), overworld: await feedback('minecraft:overworld') }, before);
+  assert.ok(!fs.readdirSync(state).some((f) => f.startsWith('gamerules-pending')), 'nothing left in the journal');
+});

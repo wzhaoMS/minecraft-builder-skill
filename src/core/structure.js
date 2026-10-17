@@ -363,11 +363,10 @@ export class Structure {
       turns = (turns + f) % 4;
     }
     const src = turns || opts.mirror ? other.transformed({ rotate: turns, mirror: opts.mirror }) : other;
-    const ob = other.bounds(), sb = src.bounds();
+    const sb = src.bounds();
     if (!sb) return this;
-    // keep the footprint's minimum corner where it was before turning (normally 0,0)
-    const dx = x + (ob.min[0] - sb.min[0]), dz = z + (ob.min[2] - sb.min[2]);
-    return this.paste(src, dx, y, dz, { skipAir: opts.skipAir, keep: opts.keep });
+    // the (turned) part's north-west corner lands exactly at x,z; its own y offsets are kept
+    return this.paste(src, x - sb.min[0], y, z - sb.min[2], { skipAir: opts.skipAir, keep: opts.keep });
   }
 
   // ───────────────────────── transforms ─────────────────────────

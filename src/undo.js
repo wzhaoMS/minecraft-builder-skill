@@ -72,19 +72,23 @@ export async function undoBuild(transport, snapFile, { force = false, anyServer 
       }
       restore.set(x, y, z, before);
     });
-    // grass/paths under the build turned into dirt while covered: put the original ground back
-    // where the undo uncovers it (a second pass, once the blocks above are gone)
+    // grass/paths the build covered turned into dirt: put the original ground back where the undo
+    // uncovers it (a second pass, once the blocks above are gone). Only cells the build itself
+    // covered count — dirt anywhere else is somebody else's doing.
     if (current && data.meta?.groundLayer) {
       const [x1, gy, z1, x2, , z2] = data.box;
       for (let x = x1; x <= x2; x++) {
         for (let z = z1; z <= z2; z++) {
           if (data.after.get(x, gy, z) != null) continue;
+          const coveredByBuild = data.after.get(x, gy + 1, z);
+          if (coveredByBuild == null || isAir(coveredByBuild)) continue;
           const before = data.structure.get(x, gy, z);
+          if (!before || !DECAYS_UNDER_COVER.has(blockName(before))) continue;
           const now = current.get(x, gy, z);
+          if (now == null) { unreadable++; continue; }
+          if (blockName(now) !== 'dirt') continue;
           const above = restore.get(x, gy + 1, z) ?? current.get(x, gy + 1, z);
-          if (before && now && DECAYS_UNDER_COVER.has(blockName(before)) && blockName(now) === 'dirt' && (above == null || isAir(above))) {
-            ground.set(x, gy, z, before);
-          }
+          if (above == null || isAir(above)) ground.set(x, gy, z, before);
         }
       }
     }

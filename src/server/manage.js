@@ -181,32 +181,61 @@ function pidAlive(pid) {
 }
 
 /**
- * Is this PID a Java process? true / false / null (couldn't tell). Guards against PID reuse:
- * after a reboot the PID in the pid file may belong to something else entirely.
+ * Full command line of a process, or null when it can't be read (no such process, no permission,
+ * tool missing). Used to prove a PID is the server *we* started before signalling it.
  */
-export function pidIsJava(pid) {
+export function processCommandLine(pid) {
   try {
     if (process.platform === 'linux') {
-      return /java/i.test(fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8'));
+      return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim() || null;
     }
     if (process.platform === 'win32') {
-      const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
-      if (!out.includes(`"${pid}"`)) return false;
-      return /"javaw?\.exe"/i.test(out);
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}").CommandLine`], { encoding: 'utf8', windowsHide: true, timeout: 20_000 });
+      return out.trim() || null;
     }
-    const out = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 10_000 });
-    return out.trim() ? /java/i.test(out) : false;
+    const out = execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 10_000 });
+    return out.trim() || null;
   } catch {
     return null;
   }
 }
 
-export function readPid(dir) {
+/**
+ * Is `pid` the server process `mcb server start` launched (it carries a unique `-Dmcb.server=<token>`)?
+ * true / false / null (can't tell — callers must then NOT kill it). Guards against PID reuse: after a
+ * reboot the PID in the pid file may belong to anything, including another Java program.
+ */
+export function isOurServer(pid, token) {
+  if (!token) return null;
+  const cmd = processCommandLine(pid);
+  if (cmd == null) return null;
+  return cmd.includes(`-Dmcb.server=${token}`);
+}
+
+/** The pid file: { pid, token } (token = null for pid files written by older versions). */
+export function readPidFile(dir) {
   const f = path.join(dir, PID_FILE);
   if (!fs.existsSync(f)) return null;
-  const pid = Number(fs.readFileSync(f, 'utf8').trim());
-  if (!Number.isInteger(pid) || !pidAlive(pid)) return null;
-  return pidIsJava(pid) === false ? null : pid; // stale pid file, PID reused by another program
+  const raw = fs.readFileSync(f, 'utf8').trim();
+  try {
+    const j = JSON.parse(raw);
+    if (j && Number.isInteger(j.pid)) return { pid: j.pid, token: j.token ?? null };
+    if (Number.isInteger(j)) return { pid: j, token: null };
+  } catch { /* not JSON */ }
+  return null;
+}
+
+/** The running server started from `dir`: { pid, ours: true|null } — null when it isn't running. */
+export function serverProcess(dir) {
+  const info = readPidFile(dir);
+  if (!info || !pidAlive(info.pid)) return null;
+  const ours = isOurServer(info.pid, info.token);
+  return ours === false ? null : { pid: info.pid, ours };
+}
+
+export function readPid(dir) {
+  return serverProcess(dir)?.pid ?? null;
 }
 
 /** Server list ping → { version, protocol, players, motd } or null. */
@@ -239,12 +268,12 @@ export async function startServer(o) {
   }
   const props = readProperties(path.join(dir, 'server.properties'));
   const port = Number(props.get('server-port') ?? 25565);
-  const running = readPid(dir);
-  if (running) {
-    log(`server already running (pid ${running})`);
-    return { pid: running, port, already: true };
-  }
+  const running = serverProcess(dir);
   const busy = await pingServer('127.0.0.1', port, 1500);
+  if (running && (running.ours || busy)) {
+    log(`server already running (pid ${running.pid})`);
+    return { pid: running.pid, port, already: true };
+  }
   if (busy) {
     throw Object.assign(new Error(`Port ${port} is already used by another running server (${busy.version ?? 'unknown version'})`), {
       code: 'PORT_IN_USE',
@@ -257,14 +286,16 @@ export async function startServer(o) {
   fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
   const out = fs.openSync(path.join(dir, 'logs', 'mcb-console.log'), 'a');
   const mem = o.memory ?? '2G';
-  const child = spawn(java, [`-Xms${mem}`, `-Xmx${mem}`, '-XX:+UseG1GC', '-jar', 'paper.jar', '--nogui'], {
+  const token = crypto.randomUUID();
+  // -Dmcb.server=<token> lets stop/status prove a PID is this server and not a reused one
+  const child = spawn(java, [`-Xms${mem}`, `-Xmx${mem}`, '-XX:+UseG1GC', `-Dmcb.server=${token}`, '-jar', 'paper.jar', '--nogui'], {
     cwd: dir,
     detached: true,
     windowsHide: true,
     stdio: ['ignore', out, out],
   });
   child.unref();
-  fs.writeFileSync(path.join(dir, PID_FILE), String(child.pid));
+  fs.writeFileSync(path.join(dir, PID_FILE), JSON.stringify({ pid: child.pid, token, startedAt: new Date().toISOString() }));
   log(`started Paper (pid ${child.pid}), waiting for it to accept connections…`);
   if (o.wait === false) return { pid: child.pid, port };
   const t0 = Date.now();
@@ -309,7 +340,9 @@ async function initWorld(dir, props, log) {
 export async function stopServer(o) {
   const log = o.log ?? (() => {});
   const dir = path.resolve(o.dir);
-  const pid = readPid(dir);
+  const proc = serverProcess(dir);
+  const pid = proc?.pid ?? null;
+  const token = readPidFile(dir)?.token ?? null;
   const props = readProperties(path.join(dir, 'server.properties'));
   if (props.get('enable-rcon') === 'true') {
     try {
@@ -322,20 +355,23 @@ export async function stopServer(o) {
       log(`RCON stop failed (${e.message})`);
     }
   }
+  let stillRunning = false;
   if (pid) {
     const t0 = Date.now();
     while (pidAlive(pid) && Date.now() - t0 < 60_000) await sleep(500);
     if (pidAlive(pid)) {
-      if (pidIsJava(pid) === true) {
+      // re-check identity right before signalling: only ever kill the process we started
+      if (isOurServer(pid, token) === true) {
         log('server still running after 60 s — terminating process');
         try { process.kill(pid); } catch { /* ignore */ }
       } else {
-        log(`process ${pid} is still running but does not look like the server — not killing it`);
+        stillRunning = true;
+        log(`process ${pid} is still running but cannot be confirmed as this server — not killing it`);
       }
     }
   }
-  fs.rmSync(path.join(dir, PID_FILE), { force: true });
-  return { stopped: true, pid };
+  if (!stillRunning) fs.rmSync(path.join(dir, PID_FILE), { force: true });
+  return { stopped: !stillRunning, pid };
 }
 
 export async function serverStatus(o) {

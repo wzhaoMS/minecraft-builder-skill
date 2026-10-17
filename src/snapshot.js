@@ -114,8 +114,18 @@ export function saveSnapshot(stateDir, snap, { overwrite = false } = {}) {
   const dir = snapshotDir(stateDir);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${snap.id}.json.gz`);
-  // new snapshots never silently replace an existing one ('wx' = fail if it exists)
-  fs.writeFileSync(file, encodeSnapshot(snap), { flag: overwrite ? 'w' : 'wx' });
+  if (!overwrite && fs.existsSync(file)) throw Object.assign(new Error(`EEXIST: snapshot ${snap.id} already exists`), { code: 'EEXIST' });
+  // write a temp file and rename it into place: a crash mid-write never leaves a torn snapshot,
+  // and a rewritten (watch) snapshot is replaced atomically
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, encodeSnapshot(snap));
+  try {
+    if (!overwrite && fs.existsSync(file)) throw Object.assign(new Error(`EEXIST: snapshot ${snap.id} already exists`), { code: 'EEXIST' });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
   return file;
 }
 

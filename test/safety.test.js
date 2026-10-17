@@ -172,6 +172,69 @@ test('house corner flowers get their own patch of grass', () => {
   }
 });
 
+test('undo only restores ground the build itself covered (player-made dirt elsewhere stays)', async () => {
+  const dir = tmp();
+  const blocks = {};
+  for (let x = 0; x <= 4; x++) blocks[`${x},-1,0`] = 'grass_block';
+  const sim = new SimTransport({ blocks });
+  const pillars = new Structure({ name: 'pillars' }).fill(0, 0, 0, 0, 2, 0, 'stone').fill(4, 0, 0, 4, 2, 0, 'stone');
+  const r = await executeBuild({ structure: pillars, transport: sim, at: [0, 0, 0], stateDir: dir, ...quiet });
+  sim.world.set('0,-1,0', 'dirt'); // decayed under a pillar
+  sim.world.set('2,-1,0', 'dirt'); // a player dug the open gap between the pillars
+  const u = await undoBuild(sim, r.undo.file, { stateDir: dir, ...quiet });
+  assert.equal(u.ok, true);
+  assert.match(sim.get(0, -1, 0), /^grass_block/);
+  assert.equal(sim.get(2, -1, 0), 'dirt', "the player's edit in the gap is not the build's doing");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('callers can persist their own undo record before the first world edit (watch)', async () => {
+  const sim = new SimTransport();
+  let editsAtHook = -1, hadChanges = false;
+  await executeBuild({
+    structure: hut(), transport: sim, at: [0, 0, 0], saveUndo: false, ...quiet,
+    beforeChanges: (rep) => { editsAtHook = sim.worldEdits.length; hadChanges = rep.changed.count > 0 && !!rep.snapshot; },
+  });
+  assert.equal(editsAtHook, 0);
+  assert.equal(hadChanges, true);
+});
+
+test('gamerule commands always name their world (a bot may stand in another one)', async () => {
+  const sim = new SimTransport();
+  await withGamerules(sim, { sendCommandFeedback: false }, async () => {}, {});
+  assert.ok(sim.commands.includes('execute in minecraft:overworld run gamerule send_command_feedback false'), sim.commands.join('\n'));
+  const bot = new SimTransport();
+  Object.defineProperty(bot, 'currentDimension', { value: 'minecraft:the_end' });
+  await withGamerules(bot, { sendCommandFeedback: false }, async () => {}, {});
+  assert.ok(bot.commands.includes('execute in minecraft:the_end run gamerule send_command_feedback true'));
+});
+
+test('a build too big to scan for containers needs --force even with --no-undo', async () => {
+  const sim = new SimTransport({ blocks: { '1,0,1': 'chest' } });
+  await assert.rejects(
+    () => executeBuild({ structure: hut(), transport: sim, at: [0, 0, 0], undo: false, maxSnapshot: 10, ...quiet }),
+    (e) => e.code === 'SCAN_TOO_LARGE',
+  );
+  assert.equal(sim.worldEdits.length, 0);
+  const r = await executeBuild({ structure: hut(), transport: sim, at: [0, 0, 0], undo: false, maxSnapshot: 10, force: true, ...quiet });
+  assert.equal(r.ok, true);
+});
+
+test('server identity: only a process carrying our launch token counts as our server', async () => {
+  const { isOurServer, processCommandLine } = await import('../src/server/manage.js');
+  const { spawn } = await import('node:child_process');
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)', '--', '-Dmcb.server=tok-123'], { stdio: 'ignore' });
+  try {
+    await new Promise((r) => setTimeout(r, 300));
+    assert.match(processCommandLine(child.pid) ?? '', /tok-123/);
+    assert.equal(isOurServer(child.pid, 'tok-123'), true);
+    assert.equal(isOurServer(child.pid, 'other-token'), false);
+    assert.equal(isOurServer(child.pid, null), null, 'no token → unknown, never "ours"');
+  } finally {
+    child.kill();
+  }
+});
+
 test('snapshot ids are unique and never overwrite each other', () => {
   const ids = new Set(Array.from({ length: 200 }, () => newSnapshotId('same name')));
   assert.equal(ids.size, 200);
@@ -328,6 +391,9 @@ test('the same seed gives the same generator output from the CLI (string) and JS
   const b = runGenerator('tree', { type: 'birch', seed: 2 });
   assert.deepEqual(a.bounds(), b.bounds());
   assert.equal(a.count, b.count);
+  for (const [str, num] of [['2e3', 2000], ['+2', 2], [' 7 ', 7]]) {
+    assert.equal(runGenerator('tree', { type: 'oak', seed: str }).count, runGenerator('tree', { type: 'oak', seed: num }).count, str);
+  }
 });
 
 test('parts: at = north-west corner after turning; facing west = rotate 90', async () => {
@@ -340,6 +406,9 @@ test('parts: at = north-west corner after turning; facing west = rotate 90', asy
   west.forEach((x, y, z, b) => { if (b.startsWith('oak_door')) door = b; });
   assert.match(door, /facing=west/);
   await assert.rejects(() => fromJson({ parts: [{ ...part, facing: 'up' }] }), /facing must be/);
+  // a part whose own blocks start away from 0,0 still lands with its corner at `at` (y offsets kept)
+  const offset = new Structure().set(5, -1, 7, 'stone').set(6, 0, 8, 'stone');
+  assert.deepEqual(new Structure().place(offset, 10, 0, 20).bounds().min, [10, -1, 20]);
 });
 
 test('JSON blueprints and configs written with a UTF-8 BOM (PowerShell 5) load fine', async () => {

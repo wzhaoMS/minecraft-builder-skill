@@ -74,10 +74,11 @@ All sections are optional and are applied **in this order** (later ones overwrit
   // 1. start from a generator
   "generator": "tower", "params": { "radius": 4, "height": 14 },
 
-  // 2. compose other blueprints / generators. "at" is where the part's north-west corner lands
-  //    AFTER it is turned; "facing" turns its front (built facing south) toward north/east/south/
-  //    west; "rotate" is the same in clockwise degrees seen from above (90 = west, 180 = north,
-  //    270 = east); "mirror": "x"|"z". Block states (stairs, doors, logs…) turn with the part.
+  // 2. compose other blueprints / generators. "at" is where the part's north-west corner (its
+  //    smallest x and z) lands AFTER it is turned — its own y offsets are kept, so a part with a
+  //    foundation at y = -1 still sinks one block; "facing" turns its front (built facing south)
+  //    toward north/east/south/west; "rotate" is the same in clockwise degrees seen from above
+  //    (90 = west, 180 = north, 270 = east); "mirror": "x"|"z". Block states turn with the part.
   "parts": [
     { "generator": "tree", "params": { "type": "oak", "seed": 3 }, "at": [12, 0, 3] },
     { "generator": "house", "params": { "style": "medieval" }, "at": [0, 0, 14], "facing": "east" },
